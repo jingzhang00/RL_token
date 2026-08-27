@@ -25,6 +25,25 @@ export PYTHONPATH="${OPENPI_WORKSPACE}:${OPENPI_ROOT}/src:${OPENPI_ROOT}/package
 
 export RLT_CONFIG
 
+case "${1:-}" in
+    cache)
+        shift
+        exec "${OPENPI_PYTHON}" -m rlt.train_token cache --config "${RLT_CONFIG}" "$@"
+        ;;
+    train)
+        shift
+        exec env \
+            XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION}" \
+            "${OPENPI_PYTHON}" -m rlt.train_token train --config "${RLT_CONFIG}" "$@"
+        ;;
+    "")
+        ;;
+    *)
+        echo "usage: $0 [cache|train] [options]" >&2
+        exit 2
+        ;;
+esac
+
 "${OPENPI_PYTHON}" -m rlt.train_token cache --config "${RLT_CONFIG}" "$@"
 exec env \
     XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION}" \

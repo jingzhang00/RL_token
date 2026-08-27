@@ -23,9 +23,19 @@ bash scripts/finetune.sh
 
 
 ## Step 1: Train the RL token on the finetuned VLA
+cache finetuned VLA features
+```bash
+bash scripts/train_rlt_d1.sh cache
+```
+reuse cache and start to train RL token
+```bash
+bash scripts/train_rlt_d1.sh train
+```
+run cache + train together
 ```bash
 bash scripts/train_rlt_d1.sh
 ```
+
 - `scripts/finetune.sh` saves checkpoints under `vla.output/config_name/exp_name/`; Step 1 automatically selects the latest checkpoint.
 - `scripts/train_rlt_d1.sh` only caches features and trains the RL token. It does not finetune the VLA again. Token checkpoints are saved automatically under `rl_token.output/step_<steps>.pt`.
 

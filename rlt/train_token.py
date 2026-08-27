@@ -51,6 +51,8 @@ def _episode_frames(dataset: Path, prompt: str = DEFAULT_PROMPT):
 
 
 def cache(args: argparse.Namespace) -> None:
+    from tqdm import tqdm
+
     from rlt.openpi_adapter import OpenPIAdapter
     from rlt.settings import load_config
 
@@ -58,7 +60,13 @@ def cache(args: argparse.Namespace) -> None:
     dataset = Path(args.dataset or settings.vla["dataset"]).resolve()
     checkpoint = Path(args.checkpoint or settings.vla_checkpoint)
     output = Path(args.output or settings.rl_token["cache_output"])
-    batch_size = int(args.batch_size or settings.rl_token["batch_size"])
+    batch_size = int(
+        args.batch_size
+        if args.batch_size is not None
+        else settings.rl_token.get(
+            "cache_batch_size", settings.rl_token["batch_size"]
+        )
+    )
     seed = int(args.seed if args.seed is not None else settings.rl_token["seed"])
     total = sum(
         __import__("pyarrow.parquet", fromlist=["read_metadata"])
@@ -76,17 +84,23 @@ def cache(args: argparse.Namespace) -> None:
     arrays = None
     offset = 0
     pending = []
-    for observation in _episode_frames(dataset, settings.vla["prompt"]):
-        pending.append(observation)
-        if len(pending) < batch_size:
-            continue
-        offset, arrays = _write_cache_batch(
-            adapter.infer(pending), output, total, offset, arrays
-        )
-        pending.clear()
-        print(f"cached {offset}/{total}", flush=True)
-    if pending:
-        offset, arrays = _write_cache_batch(adapter.infer(pending), output, total, offset, arrays)
+    with tqdm(total=total, desc="Caching VLA features", unit="frame") as progress:
+        for observation in _episode_frames(dataset, settings.vla["prompt"]):
+            pending.append(observation)
+            if len(pending) < batch_size:
+                continue
+            count = len(pending)
+            offset, arrays = _write_cache_batch(
+                adapter.infer(pending), output, total, offset, arrays
+            )
+            pending.clear()
+            progress.update(count)
+        if pending:
+            count = len(pending)
+            offset, arrays = _write_cache_batch(
+                adapter.infer(pending), output, total, offset, arrays
+            )
+            progress.update(count)
     if offset != total:
         raise RuntimeError(f"cached {offset} frames, expected {total}")
     (output / "metadata.json").write_text(
