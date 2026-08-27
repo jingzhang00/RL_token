@@ -97,7 +97,6 @@ def cache(args: argparse.Namespace) -> None:
                 "dataset": str(dataset),
                 "prompt": settings.vla["prompt"],
                 "seed": seed,
-                "openpi_commit": "215abfb217dbac7d5f1273282331b9b1866c0479",
             },
             indent=2,
         )
@@ -270,7 +269,6 @@ def _save_token(path, model, optimizer, step, args, token_count, width):
                 "alpha": 0,
                 "vla_frozen": True,
                 "vla": str(args.config or "rlt/config/config.yaml"),
-                "paper_deviation": "pi0.5, D1 12D, one base camera",
             },
         },
         path,
@@ -284,9 +282,7 @@ def _parser() -> argparse.ArgumentParser:
     cache_parser.add_argument("--config", type=Path)
     cache_parser.add_argument("--dataset", type=Path)
     cache_parser.add_argument("--checkpoint", type=Path)
-    cache_parser.add_argument(
-        "--output", type=Path
-    )
+    cache_parser.add_argument("--output", type=Path)
     cache_parser.add_argument("--batch-size", type=int)
     cache_parser.add_argument("--seed", type=int)
     cache_parser.set_defaults(function=cache)

@@ -71,7 +71,16 @@ class RLTConfig:
 
     @property
     def vla_checkpoint(self) -> Path:
-        """Return the newest OpenPI checkpoint produced by the configured finetune run."""
+        """Return the RL-token checkpoint override or the newest VLA checkpoint."""
+        configured = self.rl_token.get("checkpoint")
+        if configured:
+            checkpoint = Path(configured).expanduser()
+            if (checkpoint / "params").is_dir():
+                return checkpoint
+            raise FileNotFoundError(
+                f"configured VLA checkpoint has no params directory: {checkpoint}"
+            )
+
         output = Path(self.vla["output"])
         if (output / "params").is_dir():
             return output

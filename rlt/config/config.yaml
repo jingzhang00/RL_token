@@ -9,7 +9,7 @@ vla:
   base_checkpoint: models/openpi-assets/checkpoints/pi05_base/params
   dataset: dataset/pick_up_the_doll_and_place_it_on_the_plate
   prompt: Pick up the doll and place it on the plate
-  # Flow-matching inference steps, not action chunk length.
+  # Flow-matching inference steps, default=10 in pi settings
   inference_steps: 10
   action_horizon: 10  # VLA action chunk; RL token and online RL use the same C.
   model:
@@ -47,6 +47,7 @@ rl_token:
   device: cuda
   output: checkpoints/rlt_token
   cache_output: checkpoints/rlt_cache
+  checkpoint: openpi/checkpoints/4999
 
 online_rl:
   gamma: 0.99
