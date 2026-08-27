@@ -329,7 +329,15 @@ class Learner:
         critic_loss.backward()
         self.critic_opt.step()
         self.critic_steps += 1
-        metrics = {"critic_loss": float(critic_loss.detach())}
+        q_min = torch.minimum(q1, q2)
+        metrics = {
+            "critic_loss": float(critic_loss.detach()),
+            "q1_mean": float(q1.detach().mean()),
+            "q2_mean": float(q2.detach().mean()),
+            "q_min_mean": float(q_min.detach().mean()),
+            "target_q_mean": float(target.mean()),
+            "td_error_abs": float((q_min.detach() - target).abs().mean()),
+        }
         if self.critic_steps % self.actor_update_period == 0:
             dropped, _ = reference_dropout(
                 batch["reference"], self.reference_dropout_probability

@@ -87,6 +87,20 @@ class TrainerThread:
                             "critic_step": self.learner.critic_steps,
                             "train/critic_loss": sum(item["critic_loss"] for item in updates)
                             / len(updates),
+                            "train/q1_mean": sum(item["q1_mean"] for item in updates)
+                            / len(updates),
+                            "train/q2_mean": sum(item["q2_mean"] for item in updates)
+                            / len(updates),
+                            "train/q_min_mean": sum(item["q_min_mean"] for item in updates)
+                            / len(updates),
+                            "train/target_q_mean": sum(
+                                item["target_q_mean"] for item in updates
+                            )
+                            / len(updates),
+                            "train/td_error_abs": sum(
+                                item["td_error_abs"] for item in updates
+                            )
+                            / len(updates),
                             "train/actor_step": self.learner.actor_steps,
                             "train/replay_size": len(self.replay),
                             **(
