@@ -9,6 +9,13 @@ cd "${WORKSPACE}"
 export RLT_CONFIG="${CONFIG}"
 export PYTHONPATH="${WORKSPACE}:${WORKSPACE}/openpi/src:${WORKSPACE}/openpi/packages/openpi-client/src:${PYTHONPATH:-}"
 
+WANDB_ENV_FILE="${WANDB_ENV_FILE:-${WORKSPACE}/wandb.env}"
+if [[ -f "${WANDB_ENV_FILE}" ]]; then
+    set -a
+    source "${WANDB_ENV_FILE}"
+    set +a
+fi
+
 TOKEN_CHECKPOINT="${RLT_TOKEN_CHECKPOINT:-$("${PYTHON}" -c 'from pathlib import Path; from rlt.settings import load_config; c=load_config(); print(Path(c.rl_token["output"]) / ("step_" + str(c.rl_token["steps"]) + ".pt"))')}"
 FEATURE_HOST="$("${PYTHON}" -c 'from rlt.settings import load_config; print(load_config().runtime["feature_host"])')"
 FEATURE_PORT="$("${PYTHON}" -c 'from rlt.settings import load_config; print(load_config().runtime["feature_port"])')"

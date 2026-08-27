@@ -49,20 +49,21 @@ Bring up the hardware gradually. Without `--execute`, the program only reads the
 
 ```bash
 # 1. Dry-run with the base VLA only
-.venv/bin/python -m robots.d1.online_rl_d1 --phase eval-base --episodes 1
+python -m robots.d1.online_rl_d1 --phase eval-base --episodes 1
 # 2. RLT shadow run
-.venv/bin/python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1
+python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1
 # 3. Execute with the default 12°/tick safety limit
-.venv/bin/python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1 --execute
+python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1 --execute
 # 4. Test human takeover (press Space to enter/exit)
-.venv/bin/python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1 --execute --human
+python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1 --execute --human
 # 5. Full online run (also starts the feature server)
 bash scripts/online.sh --execute --human
 ```
 
-- The control frequency is fixed at 10 Hz. Press `c` to enter the critical phase, Space to toggle human takeover, `s/f` to mark success/failure, and `q` or Ctrl+C to abandon the current unlabeled episode. Mark success only after the doll is supported by the plate, the hand has released it, and the scene has been stable for 1 second.
+- The control frequency is fixed at 10 Hz. After the initial pose is reached, a separate camera thread opens the `D1 Online RL` window and shows live frames during warmup and rollout. During an episode, press Enter to end it; the robot stays at its last commanded pose and the camera/data thread pauses. Then press `s` or `f` to label success/failure. Press `c` to enter the critical phase, Space to toggle human takeover, and `q` or Ctrl+C to abandon the current episode without adding it to replay. Mark success only after the doll is supported by the plate, the hand has released it, and the scene has been stable for 1 second.
 
-- In `auto` mode, the VLA first fills the replay buffer to `online_rl.warmup_transitions`. Each subsequent episode starts with the VLA; press `c` to hand control to the RL policy. Press `q` to abandon the current episode or Ctrl+C to stop the run. Use `--episodes N` to limit the number of episodes.
+- In `auto` mode, the VLA first fills the replay buffer to `online_rl.warmup_transitions`; after warmup, the program asks for confirmation before rollout. Each episode requires confirmation of the reset to the initial pose. Each subsequent episode starts with the VLA; press `c` to hand control to the RL policy. Use `--episodes N` to limit the number of episodes.
+- When `wandb_enabled: true`, WandB starts only after rollout is confirmed and logs episode metrics plus actor/critic training metrics. Set `WANDB_API_KEY` directly or put it in `wandb.env` before running `scripts/online.sh`.
 - The SQLite replay buffer and online learner checkpoint are stored under `online_rl.output/`; the checkpoint is automatically named `learner.pt`.
 
 ## Evaluation and checks

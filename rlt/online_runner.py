@@ -43,7 +43,10 @@ class Keys:
 
 
 class TrainerThread:
-    def __init__(self, learner, replay, batch_size, checkpoint, lock, metadata, save_interval):
+    def __init__(
+        self, learner, replay, batch_size, checkpoint, lock, metadata, save_interval,
+        wandb_run=None,
+    ):
         self.learner, self.replay, self.batch_size, self.checkpoint, self.lock = (
             learner,
             replay,
@@ -52,6 +55,7 @@ class TrainerThread:
             lock,
         )
         self.metadata, self.save_interval = metadata, int(save_interval)
+        self.wandb_run = wandb_run
         self.queue, self.stop = queue.Queue(), threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
 
@@ -63,6 +67,9 @@ class TrainerThread:
         for _ in range(count):
             self.queue.put(1)
 
+    def set_wandb_run(self, wandb_run):
+        self.wandb_run = wandb_run
+
     def run(self):
         while not self.stop.is_set() or not self.queue.empty():
             try:
@@ -70,16 +77,95 @@ class TrainerThread:
             except queue.Empty:
                 continue
             with self.lock:
-                metrics = self.learner.update_for_new_transition(
+                updates = self.learner.update_for_new_transition(
                     self.replay, self.batch_size
                 )
-                if metrics and self.learner.critic_steps % self.save_interval == 0:
+                if updates and self.wandb_run is not None:
+                    actor_losses = [item["actor_loss"] for item in updates if "actor_loss" in item]
+                    self.wandb_run.log(
+                        {
+                            "critic_step": self.learner.critic_steps,
+                            "train/critic_loss": sum(item["critic_loss"] for item in updates)
+                            / len(updates),
+                            "train/actor_step": self.learner.actor_steps,
+                            "train/replay_size": len(self.replay),
+                            **(
+                                {"train/actor_loss": sum(actor_losses) / len(actor_losses)}
+                                if actor_losses
+                                else {}
+                            ),
+                        }
+                    )
+                if updates and self.learner.critic_steps % self.save_interval == 0:
                     self.learner.save(self.checkpoint, self.metadata)
 
     def __exit__(self, *_):
         self.stop.set()
         self.thread.join()
         self.learner.save(self.checkpoint, self.metadata)
+
+
+def _read_episode_label() -> bool:
+    while True:
+        label = input("Episode ended. Enter s for success or f for failure: ").strip().lower()
+        if label in {"s", "success"}:
+            return True
+        if label in {"f", "failure"}:
+            return False
+        print("Please enter s or f.")
+
+
+def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
+    move_to_initial_pose = getattr(hardware, "move_to_initial_pose", None)
+    if move_to_initial_pose is None:
+        input(f"Reset robot/task for {phase} episode {episode}; press Enter")
+        return
+
+    if first:
+        input("Calibration: press Enter to restore the initial pose")
+    else:
+        input("Episode recorded. Reset robot/task, then press Enter to restore the initial pose")
+    move_to_initial_pose()
+    start_camera_thread = getattr(hardware, "start_camera_thread", None)
+    if start_camera_thread is not None:
+        start_camera_thread()
+    if first:
+        input(f"Initial pose reached. Reset robot/task for {phase} episode {episode}; press Enter")
+    else:
+        input("Initial pose reached. Press Enter to start the next episode")
+
+
+def _confirm_rollout() -> bool:
+    while True:
+        answer = input("Warmup is complete. Start rollout? [y/n]: ").strip().lower()
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no", "q", "quit", ""}:
+            return False
+        print("Please enter y or n.")
+
+
+def _init_wandb(settings, args, learner, warmup_transitions):
+    import wandb
+
+    wandb_run = wandb.init(
+        project=settings.project_name,
+        name=settings.online_rl.get("exp_name", f"online_rl_{settings.task}"),
+        config={
+            "config_path": str(settings.path),
+            "task": settings.task,
+            "phase": args.phase,
+            "control_hz": settings.control_hz,
+            "action_horizon": settings.action_horizon,
+            "batch_size": args.batch_size,
+            "warmup_transitions": warmup_transitions,
+            "learner_device": str(learner.device),
+            "online_rl": settings.online_rl,
+        },
+    )
+    wandb_run.define_metric("train/*", step_metric="critic_step")
+    wandb_run.define_metric("episode/*", step_metric="episode")
+    return wandb_run
 
 
 def _learner_dimensions(
@@ -137,7 +223,8 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     )
     period = 1.0 / args.control_hz
     print(
-        f"\n{phase}: c=enter critical, space=human, s=success, f=failure, q=abort "
+        f"\n{phase}: Enter=end episode, c=enter critical, space=human, "
+        f"s/f=label after ending, q=abort "
         f"(timeout {timeout}s)"
     )
     with Keys() as keys:
@@ -147,6 +234,11 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
             if key in {"q", "\x03"}:
                 aborted = True
                 break
+            if key in {"\r", "\n"}:
+                if ticks:
+                    ticks[-1]["done"] = True
+                    break
+                continue
             if key == "c" and not warmup:
                 critical = True
                 actor_chunk = None
@@ -236,14 +328,16 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     "reward": 0.0,
                 }
             )
-            if key in {"s", "f"}:
-                ticks[-1]["done"] = True
-                ticks[-1]["reward"] = float(key == "s")
-                return ticks, key == "s", time.monotonic() - started, aborted
             time.sleep(max(0, period - (time.monotonic() - tick_start)))
 
+    stop_camera_thread = getattr(hardware, "stop_camera_thread", None)
+    if stop_camera_thread is not None:
+        stop_camera_thread()
     if ticks and not aborted:
         ticks[-1]["done"] = True
+        success = _read_episode_label()
+        ticks[-1]["reward"] = float(success)
+        return ticks, success, time.monotonic() - started, aborted
     return ticks, False, time.monotonic() - started, aborted
 
 
@@ -365,7 +459,11 @@ def run(args, hardware_cls) -> None:
     episode_count = args.episodes
     if episode_count is None and args.phase.startswith("eval"):
         episode_count = int(settings.online_rl["evaluation_episodes"])
+    wandb_run = None
     try:
+        rollout_confirmed = args.phase not in {"auto", "warmup"}
+        if rollout_confirmed and not args.phase.startswith("eval") and settings.wandb_enabled:
+            wandb_run = _init_wandb(settings, args, learner, warmup_transitions)
         with (
             hardware_cls(args) as hardware,
             TrainerThread(
@@ -376,15 +474,29 @@ def run(args, hardware_cls) -> None:
                 lock,
                 learner_metadata,
                 settings.online_rl["checkpoint_interval"],
+                wandb_run,
             ) as trainer,
         ):
             episode = 0
+            first_episode = True
             while episode_count is None or episode < episode_count:
                 phase = args.phase
+                if (
+                    phase == "auto"
+                    and not rollout_confirmed
+                    and len(replay) >= warmup_transitions
+                ):
+                    if not _confirm_rollout():
+                        return
+                    rollout_confirmed = True
+                    if settings.wandb_enabled:
+                        wandb_run = _init_wandb(
+                            settings, args, learner, warmup_transitions
+                        )
+                        trainer.set_wandb_run(wandb_run)
                 args.auto_warmup = phase == "auto" and len(replay) < warmup_transitions
-                input(
-                    f"Reset robot/task for {phase} episode {episode + 1}; press Enter"
-                )
+                _prepare_episode(hardware, phase, episode + 1, first_episode)
+                first_episode = False
                 ticks, success, elapsed, aborted = run_episode(
                     args, phase, hardware, feature, learner, lock, q01, q99
                 )
@@ -399,7 +511,12 @@ def run(args, hardware_cls) -> None:
                 if not phase.startswith("eval"):
                     for row in rows:
                         replay.add(row)
-                    trainer.notify(len(rows))
+                    if rollout_confirmed:
+                        trainer.notify(len(rows))
+                    else:
+                        print(
+                            f"Warmup transitions: {len(replay)}/{warmup_transitions}"
+                        )
                 record = {
                     "phase": phase,
                     "task": args.eval_task if phase.startswith("eval") else phase,
@@ -409,10 +526,26 @@ def run(args, hardware_cls) -> None:
                     "robot_hours": (time.monotonic() - wall_start) / 3600,
                 }
                 outcomes.append(record)
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "episode": episode + 1,
+                            "episode/success": int(success),
+                            "episode/success_rate": sum(
+                                item["success"] for item in outcomes
+                            )
+                            / len(outcomes),
+                            "episode/seconds": elapsed,
+                            "episode/transitions": len(rows),
+                            "episode/replay_size": len(replay),
+                        }
+                    )
                 with (args.output / "episodes.jsonl").open("a") as stream:
                     stream.write(json.dumps(record) + "\n")
                 episode += 1
     finally:
+        if wandb_run is not None:
+            wandb_run.finish()
         with contextlib.suppress(Exception):
             feature._ws.close()
         replay.close()

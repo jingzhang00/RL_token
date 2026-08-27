@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 from pathlib import Path
+import threading
 
 import numpy as np
 
@@ -14,6 +16,12 @@ from rlt.online_runner import run
 
 
 HEAD = np.deg2rad([-15, -60]).astype(np.float32)
+DEFAULT_INITIAL_STATE_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "rlt"
+    / "config"
+    / "pick_up_the_doll_initial_state.json"
+)
 
 
 def _read_state(head_arm, hand):
@@ -29,6 +37,18 @@ def _read_state(head_arm, hand):
     return np.concatenate([headarm[2:], hand_state]).astype(np.float32)
 
 
+def _load_initial_state(path: Path) -> np.ndarray:
+    if not path.is_file():
+        raise FileNotFoundError(f"initial state file not found: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    state = np.asarray(data.get("observation.state"), dtype=np.float32)
+    if state.shape != (12,) or not np.isfinite(state).all():
+        raise ValueError(f"initial state must be a finite 12-D vector: {path}")
+    if np.any((state[6:] < 0) | (state[6:] > 1)):
+        raise ValueError(f"initial hand state must be in [0, 1]: {path}")
+    return state
+
+
 class D1Hardware:
     """Adapter implementing the hardware protocol expected by ``rlt.online_rl``."""
 
@@ -36,6 +56,17 @@ class D1Hardware:
 
     def __init__(self, args):
         self.args, self.robot = args, None
+        self.window_name = "D1 Online RL"
+        self._camera_thread = None
+        self._camera_stop = threading.Event()
+        self._camera_active = threading.Event()
+        self._camera_paused = threading.Event()
+        self._camera_paused.set()
+        self._camera_ready = threading.Event()
+        self._camera_lock = threading.Lock()
+        self._latest_bgr = None
+        self._camera_error = None
+        self.initial_state = _load_initial_state(args.initial_state_file)
         self.exo = self.glove = None
         self.exo_zero = self.takeover_arm = self.glove_zero = self.takeover_hand = None
 
@@ -74,8 +105,52 @@ class D1Hardware:
             )
         return self
 
+    def start_camera_thread(self):
+        if self._camera_thread is not None and self._camera_thread.is_alive():
+            self._camera_ready.clear()
+            self._camera_active.set()
+            return
+        self._camera_stop.clear()
+        self._camera_active.set()
+        self._camera_ready.clear()
+        self._camera_error = None
+        self._camera_thread = threading.Thread(
+            target=self._camera_loop, name="d1-camera", daemon=True
+        )
+        self._camera_thread.start()
+
+    def _camera_loop(self):
+        import cv2
+
+        try:
+            while not self._camera_stop.is_set():
+                if not self._camera_active.is_set():
+                    self._camera_ready.clear()
+                    self._camera_paused.set()
+                    self._camera_active.wait(0.05)
+                    continue
+                self._camera_paused.clear()
+                bgr = self.robot.vision.read_view()
+                if not self._camera_active.is_set():
+                    continue
+                with self._camera_lock:
+                    self._latest_bgr = np.ascontiguousarray(bgr)
+                self._camera_ready.set()
+                cv2.imshow(self.window_name, bgr)
+                cv2.waitKey(1)
+        except Exception as exc:
+            self._camera_error = exc
+        finally:
+            self._camera_paused.set()
+            self._camera_ready.set()
+
     def read(self):
-        bgr = self.robot.vision.read_view()
+        if not self._camera_ready.wait(2.0):
+            raise RuntimeError("camera thread did not produce a frame")
+        if self._camera_error is not None:
+            raise RuntimeError("camera thread failed") from self._camera_error
+        with self._camera_lock:
+            bgr = self._latest_bgr.copy()
         state = _read_state(self.robot.head_arm, self.robot.hand)
         return np.ascontiguousarray(np.asarray(bgr, dtype=np.uint8)[:, :, ::-1]), state
 
@@ -120,11 +195,44 @@ class D1Hardware:
         )
         self.robot.hand.set_joint_pos(command[6:].astype(float).tolist())
 
+    def move_to_initial_pose(self):
+        if not self.args.execute:
+            return
+        headarm_command = np.concatenate([HEAD, self.initial_state[:6]]).astype(float)
+        self.robot.head_arm.set_positions(headarm_command.tolist())
+        self.robot.hand.set_joint_pos(self.initial_state[6:].astype(float).tolist())
+        result = self.robot.head_arm.wait_until_reached(
+            headarm_command.tolist(),
+            active_joint_indices=range(8),
+            pos_tol_deg=5.0,
+            vel_tol_deg_s=20.0,
+            timeout_s=15.0,
+        )
+        if result is None or result is False:
+            raise RuntimeError("robot did not reach the initial pose within 15 seconds")
+
     def __exit__(self, *_):
+        self.close_camera_thread()
+        with contextlib.suppress(Exception):
+            import cv2
+
+            cv2.destroyWindow(self.window_name)
         for obj in (self.glove, self.exo, self.robot):
             with contextlib.suppress(Exception):
                 if obj is not None:
                     obj.close()
+
+    def stop_camera_thread(self):
+        self._camera_active.clear()
+        self._camera_ready.clear()
+        self._camera_paused.wait(2.0)
+
+    def close_camera_thread(self):
+        self._camera_stop.set()
+        self._camera_active.set()
+        if self._camera_thread is not None and self._camera_thread.is_alive():
+            self._camera_thread.join(2.0)
+        self._camera_thread = None
 
 
 def main() -> None:
@@ -157,6 +265,11 @@ def main() -> None:
     parser.add_argument("--hand-can", default=None)
     parser.add_argument("--hand-baud", type=int, default=None)
     parser.add_argument("--camera-device", default=None)
+    parser.add_argument(
+        "--initial-state-file",
+        type=Path,
+        default=DEFAULT_INITIAL_STATE_FILE,
+    )
     parser.add_argument("--exo-port", default=None)
     parser.add_argument("--glove-port", default=None)
     args = parser.parse_args()

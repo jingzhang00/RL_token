@@ -4,10 +4,17 @@ import numpy as np
 import torch
 
 from rlt.models import Actor, Critic, RLToken, actor_loss, reference_dropout
+from rlt.online_runner import _read_episode_label
 from rlt.rl_core import Learner, Replay, Transition, build_transitions, make_proprio
 from rlt.actions import absolute_to_normalized, normalized_to_absolute, safe_command
 from rlt.serve_features import FeaturePolicy
 from rlt.settings import load_config
+
+
+def test_episode_label_is_collected_after_episode_ends(monkeypatch):
+    labels = iter(["invalid", "s"])
+    monkeypatch.setattr("builtins.input", lambda _: next(labels))
+    assert _read_episode_label()
 
 
 def test_rl_token_shape_causality_and_stop_gradient():
@@ -119,7 +126,7 @@ def test_eq5_uses_squared_l2_norm_and_c_step_rewards():
 
 def test_frequency_and_task_mlp_settings_are_derived_from_yaml():
     config = load_config()
-    assert (config.control_hz, config.action_horizon) == (10, 10)
+    assert (config.control_hz, config.action_horizon) == (10, 20)
     assert config.transition_horizon == config.action_horizon
     assert config.target_discount == 0.99**config.action_horizon
     assert "phases" not in config.online_rl and "max_hours" not in config.runtime

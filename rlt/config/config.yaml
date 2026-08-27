@@ -57,7 +57,7 @@ online_rl:
   actor_update_period: 2
   critic_updates_per_transition: 5
   batch_size: 256
-  warmup_transitions: 256
+  warmup_transitions: 1000
   replay_capacity: 100000
   output: checkpoints/online
   checkpoint_interval: 100
