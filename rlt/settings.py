@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import os
 from pathlib import Path
 from typing import Any
@@ -12,10 +11,6 @@ import yaml
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("config") / "config.yaml"
-
-
-def _steps(seconds: float, hz: float) -> int:
-    return max(1, int(math.floor(float(seconds) * float(hz) + 0.5)))
 
 
 def dataset_action_dim(dataset: str | Path) -> int:
@@ -60,8 +55,7 @@ class RLTConfig:
     project_name: str
     log_interval: int
     control_hz: float
-    chunk_duration_s: float
-    vla_horizon_duration_s: float
+    action_horizon: int
     transition_stride_steps: int
     vla: dict[str, Any]
     vla_finetune: dict[str, Any]
@@ -72,16 +66,8 @@ class RLTConfig:
     mlp: MLPConfig
 
     @property
-    def chunk_len(self) -> int:
-        return _steps(self.chunk_duration_s, self.control_hz)
-
-    @property
     def transition_horizon(self) -> int:
-        return self.chunk_len
-
-    @property
-    def vla_horizon(self) -> int:
-        return _steps(self.vla_horizon_duration_s, self.control_hz)
+        return self.action_horizon
 
     @property
     def vla_checkpoint(self) -> Path:
@@ -131,11 +117,11 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
     runtime = {**dict(data.get("runtime", {})), **dict(robot_data.get("runtime", {}))}
     hardware = dict(robot_data.get("hardware", {}))
     control_hz = float(runtime.get("control_hz", 10))
-    chunk_duration_s = float(runtime.get("rl_chunk_duration_s", 0.2))
-    vla_horizon_duration_s = float(runtime.get("vla_horizon_duration_s", 1.0))
+    vla = dict(data.get("vla", {}))
+    action_horizon = int(vla.get("action_horizon", 10))
     stride = int(runtime.get("transition_stride_steps", 2))
-    if control_hz <= 0 or chunk_duration_s <= 0 or vla_horizon_duration_s <= 0:
-        raise ValueError("control_hz and chunk durations must be positive")
+    if control_hz <= 0 or action_horizon < 1:
+        raise ValueError("control_hz and action_horizon must be positive")
     if stride < 1:
         raise ValueError("transition_stride_steps must be positive")
 
@@ -159,7 +145,6 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
     ) < 1:
         raise ValueError("MLP dimensions and layer counts must be positive")
 
-    vla = dict(data.get("vla", {}))
     vla_finetune = dict(vla.get("finetune", {}))
     rl_token = dict(data.get("rl_token", {}))
     online_rl = dict(data.get("online_rl", {}))
@@ -175,8 +160,7 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
         project_name=str(data.get("project_name", "openpi")),
         log_interval=int(data.get("log_interval", 100)),
         control_hz=control_hz,
-        chunk_duration_s=chunk_duration_s,
-        vla_horizon_duration_s=vla_horizon_duration_s,
+        action_horizon=action_horizon,
         transition_stride_steps=stride,
         vla=vla,
         vla_finetune=vla_finetune,

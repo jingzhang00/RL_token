@@ -24,7 +24,7 @@ from rlt.actions import (
     safe_command,
 )
 from rlt.models import Actor, Critic
-from rlt.online import Learner, Replay, build_transitions, make_proprio
+from rlt.rl_core import Learner, Replay, build_transitions, make_proprio
 from rlt.settings import load_config
 
 
@@ -265,7 +265,7 @@ def run(args, hardware_cls) -> None:
         args.max_arm_delta_deg or settings.runtime["max_arm_delta_deg"]
     )
     args.control_hz = settings.control_hz
-    args.chunk_len = settings.chunk_len
+    args.chunk_len = settings.action_horizon
     args.prompt = settings.vla["prompt"]
     args.sigma = float(settings.online_rl["sigma"])
     args.critical_timeout_s = float(settings.runtime["critical_timeout_s"])
@@ -297,7 +297,7 @@ def run(args, hardware_cls) -> None:
     proprio_dim = getattr(hardware_cls, "proprio_dim", None)
     if checkpoint.exists():
         action_dim, proprio_dim = _learner_dimensions(
-            checkpoint, z_dim, settings.chunk_len
+            checkpoint, z_dim, settings.action_horizon
         )
     if action_dim != len(q01):
         raise ValueError(
@@ -310,7 +310,7 @@ def run(args, hardware_cls) -> None:
     actor = Actor(
         z_dim,
         proprio_dim,
-        settings.chunk_len,
+        settings.action_horizon,
         action_dim,
         settings.mlp.actor_hidden_dim,
         settings.mlp.actor_num_layers,
@@ -318,7 +318,7 @@ def run(args, hardware_cls) -> None:
     critic = Critic(
         z_dim,
         proprio_dim,
-        settings.chunk_len,
+        settings.action_horizon,
         action_dim,
         settings.mlp.critic_hidden_dim,
         settings.mlp.critic_num_layers,
@@ -352,7 +352,7 @@ def run(args, hardware_cls) -> None:
         "config": str(settings.path),
         "task": settings.task,
         "control_hz": settings.control_hz,
-        "C": settings.chunk_len,
+        "C": settings.action_horizon,
         "z_dim": z_dim,
         "action_dim": action_dim,
         "proprio_dim": proprio_dim,

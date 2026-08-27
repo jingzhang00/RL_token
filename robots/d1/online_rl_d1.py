@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from rlt.actions import ARM_HIGH, ARM_LOW
-from rlt.online_rl import run
+from rlt.online_runner import run
 
 
 HEAD = np.deg2rad([-15, -60]).astype(np.float32)

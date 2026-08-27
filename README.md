@@ -63,11 +63,10 @@ bash scripts/online.sh --phase auto --execute --human --learner-device auto
 bash scripts/online.sh --phase auto --execute --human --learner-device auto
 ```
 
-模型和 RL 参数在 `rlt/config/config.yaml`，控制频率及硬件/runtime 参数在
-`rlt/config/robot.yaml`。控制频率固定为 10 Hz；
-默认 RL chunk 时长沿用论文的 0.2 s，因此自动得到 `C=2`、transition horizon=2、
-target discount=`gamma**2`，VLA 的 1 s action horizon 自动得到 H=10。论文实验是
-50 Hz、C=10，本地 10 Hz 是 D1 硬件约束下的时间尺度对应，不是原始数值复现。
+VLA 的 action chunk 在 `rlt/config/config.yaml` 的 `vla.action_horizon` 中直接设置；
+RL token 和 online RL 复用同一个值作为 `C`，transition horizon 和 target discount
+也会自动使用 `C`。控制频率及硬件/runtime 参数在 `rlt/config/robot.yaml`，当前控制频率为
+10 Hz。论文实验使用 50 Hz、C=10，本地 10 Hz 是 D1 硬件约束下的执行频率。
 
 `auto` 检测到 CUDA 时 actor/critic 在 GPU 异步更新；显存不足可传 `--learner-device cpu`。
 控制频率固定 10 Hz，按键为 `c` 进入关键阶段、空格切换人工接管、`s/f` 标记成功/失败、

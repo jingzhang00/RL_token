@@ -59,7 +59,7 @@ def test_real_token_and_one_online_update():
     import torch
 
     from rlt.models import Actor, Critic, RLToken
-    from rlt.online import Learner, Transition
+    from rlt.rl_core import Learner, Transition
     from rlt.openpi_adapter import OpenPIAdapter
 
     token_path = Path(

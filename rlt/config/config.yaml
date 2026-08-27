@@ -9,8 +9,9 @@ vla:
   base_checkpoint: models/openpi-assets/checkpoints/pi05_base/params
   dataset: dataset/pick_up_the_doll_and_place_it_on_the_plate
   prompt: Pick up the doll and place it on the plate
-  # Flow-matching inference steps
+  # Flow-matching inference steps, not action chunk length.
   inference_steps: 10
+  action_horizon: 10  # VLA action chunk; RL token and online RL use the same C.
   model:
     pi05: true
     discrete_state_input: true

@@ -110,7 +110,7 @@ def get_d1_configs():
             model=pi0_config.Pi0Config(
                 pi05=RLT_SETTINGS.vla["model"]["pi05"],
                 action_dim=action_dim,
-                action_horizon=RLT_SETTINGS.vla_horizon,
+                action_horizon=RLT_SETTINGS.action_horizon,
                 discrete_state_input=RLT_SETTINGS.vla["model"]["discrete_state_input"],
             ),
             data=LeRobotD1DataConfig(

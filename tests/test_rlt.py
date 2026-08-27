@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from rlt.models import Actor, Critic, RLToken, actor_loss, reference_dropout
-from rlt.online import Learner, Replay, Transition, build_transitions, make_proprio
+from rlt.rl_core import Learner, Replay, Transition, build_transitions, make_proprio
 from rlt.actions import absolute_to_normalized, normalized_to_absolute, safe_command
 from rlt.serve_features import FeaturePolicy
 from rlt.settings import load_config
@@ -111,9 +111,9 @@ def test_eq5_uses_squared_l2_norm_and_c_step_rewards():
 
 def test_frequency_and_task_mlp_settings_are_derived_from_yaml():
     config = load_config()
-    assert (config.control_hz, config.chunk_len, config.vla_horizon) == (10, 2, 10)
-    assert config.transition_horizon == config.chunk_len
-    assert config.target_discount == 0.99**config.chunk_len
+    assert (config.control_hz, config.action_horizon) == (10, 10)
+    assert config.transition_horizon == config.action_horizon
+    assert config.target_discount == 0.99**config.action_horizon
     assert "phases" not in config.online_rl and "max_hours" not in config.runtime
     assert "action_dim" not in config.online_rl and "proprio_dim" not in config.online_rl
     assert "action_dim" not in config.vla and config.action_dim == 12

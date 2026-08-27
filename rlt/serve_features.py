@@ -84,8 +84,8 @@ def main() -> None:
     stats = json.loads(stats_path.read_text())["norm_stats"]["actions"]
     metadata = {
         "z_dim": token.width,
-        "action_horizon": settings.vla_horizon,
-        "chunk_len": settings.chunk_len,
+        "action_horizon": settings.action_horizon,
+        "chunk_len": settings.action_horizon,
         "action_dim": settings.action_dim,
         "action_q01": stats["q01"],
         "action_q99": stats["q99"],
@@ -101,7 +101,7 @@ def main() -> None:
         token,
         device,
         metadata,
-        settings.chunk_len,
+        settings.action_horizon,
     )
     WebsocketPolicyServer(
         policy, host=host, port=port, metadata=metadata
