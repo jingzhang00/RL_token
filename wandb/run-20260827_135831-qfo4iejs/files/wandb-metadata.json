@@ -1,0 +1,45 @@
+{
+  "os": "Linux-6.8.0-136-generic-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.15",
+  "startedAt": "2026-08-27T05:58:31.894575Z",
+  "args": [
+    "train",
+    "--config",
+    "/home/ai01/Downloads/RL_token/rlt/config/config.yaml"
+  ],
+  "program": "-m rlt.train_token",
+  "git": {
+    "remote": "git@github.com:jingzhang00/RL_token.git",
+    "commit": "f714c6a73a7f2bcdf3d3b4050f444cd0f45e25e9"
+  },
+  "email": "bleu.outremer@icloud.com",
+  "root": "/home/ai01/Downloads/RL_token",
+  "host": "ai01-B650M-AORUS-PRO-AX",
+  "executable": "/home/ai01/Downloads/RL_token/.venv/bin/python",
+  "cpu_count": 16,
+  "cpu_count_logical": 32,
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1869031350272",
+      "used": "1292019048448"
+    }
+  },
+  "memory": {
+    "total": "98705653760"
+  },
+  "cpu": {
+    "count": 16,
+    "countLogical": 32
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4090",
+      "memoryTotal": "51527024640",
+      "cudaCores": 16384,
+      "architecture": "Ada"
+    }
+  ],
+  "cudaVersion": "13.0"
+}

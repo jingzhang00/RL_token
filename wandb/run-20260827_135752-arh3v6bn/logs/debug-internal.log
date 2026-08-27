@@ -1,0 +1,15 @@
+{"time":"2026-08-27T13:57:52.994847463+08:00","level":"INFO","msg":"stream: starting","core version":"0.19.11","symlink path":"/home/ai01/Downloads/RL_token/wandb/run-20260827_135752-arh3v6bn/logs/debug-core.log"}
+{"time":"2026-08-27T13:57:53.544689512+08:00","level":"INFO","msg":"created new stream","id":"arh3v6bn"}
+{"time":"2026-08-27T13:57:53.544713407+08:00","level":"INFO","msg":"stream: started","id":"arh3v6bn"}
+{"time":"2026-08-27T13:57:53.544734277+08:00","level":"INFO","msg":"sender: started","stream_id":"arh3v6bn"}
+{"time":"2026-08-27T13:57:53.544734548+08:00","level":"INFO","msg":"writer: Do: started","stream_id":"arh3v6bn"}
+{"time":"2026-08-27T13:57:53.544760047+08:00","level":"INFO","msg":"handler: started","stream_id":"arh3v6bn"}
+{"time":"2026-08-27T13:57:53.930445703+08:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2026-08-27T13:58:10.439052634+08:00","level":"INFO","msg":"stream: closing","id":"arh3v6bn"}
+{"time":"2026-08-27T13:58:10.439072312+08:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2026-08-27T13:58:10.439094945+08:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2026-08-27T13:58:11.356067118+08:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-08-27T13:58:11.91260611+08:00","level":"INFO","msg":"handler: closed","stream_id":"arh3v6bn"}
+{"time":"2026-08-27T13:58:11.912643642+08:00","level":"INFO","msg":"writer: Close: closed","stream_id":"arh3v6bn"}
+{"time":"2026-08-27T13:58:11.912671916+08:00","level":"INFO","msg":"sender: closed","stream_id":"arh3v6bn"}
+{"time":"2026-08-27T13:58:11.912697064+08:00","level":"INFO","msg":"stream: closed","id":"arh3v6bn"}

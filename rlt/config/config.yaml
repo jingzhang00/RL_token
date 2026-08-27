@@ -1,7 +1,7 @@
 task: d1
 wandb_enabled: true
 project_name: openpi
-log_interval: 100
+log_interval: 10
 
 vla:
   config_name: pi05_d1
@@ -22,11 +22,6 @@ vla:
     enabled: true
     steps: 5000
     batch_size: 128
-    warmup_steps: 1000
-    peak_lr: 2.5e-5
-    decay_steps: 30000
-    decay_lr: 2.5e-6
-    ema_decay: 0.999
     save_interval: 1000
     keep_period: 15000
     num_workers: 8
@@ -39,11 +34,11 @@ rl_token:
   heads: 8
   layers: 2
   mlp_ratio: 4
-  steps: 5000
+  steps: 10000
   cache_batch_size: 8
-  batch_size: 16
+  batch_size: 128
   learning_rate: 1.0e-4
-  save_every: 500
+  save_every: 2000
   exp_name: rlt_token_d1
   seed: 42
   device: cuda

@@ -162,6 +162,8 @@ def _write_cache_batch(result, output: Path, total: int, offset: int, arrays):
 
 
 def train(args: argparse.Namespace) -> None:
+    from tqdm import tqdm
+
     from rlt.settings import load_config
 
     settings = load_config(args.config)
@@ -229,40 +231,47 @@ def train(args: argparse.Namespace) -> None:
         "mlp_ratio": mlp_ratio,
         "max_tokens": token_count,
     }
-    for step in range(start + 1, steps + 1):
-        indices = np.random.randint(0, len(tokens), size=batch_size)
-        batch_tokens = torch.from_numpy(
-            np.asarray(tokens[indices], dtype=np.float32)
-        ).to(device)
-        batch_valid = torch.from_numpy(np.asarray(valid[indices])).to(device)
-        with torch.autocast(
-            device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
-        ):
-            _, _, loss = model(batch_tokens, batch_valid)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-        if step == 1 or step % log_interval == 0 or step == steps:
-            loss_value = float(loss)
-            print(f"step={step} reconstruction_mse={loss_value:.6f}", flush=True)
-            if wandb_run is not None:
-                wandb_run.log(
-                    {
-                        "reconstruction_mse": loss_value,
-                        "learning_rate": optimizer.param_groups[0]["lr"],
-                    },
-                    step=step,
+    with tqdm(
+        total=steps,
+        initial=start,
+        desc="Training RL token",
+        unit="step",
+    ) as progress:
+        for step in range(start + 1, steps + 1):
+            indices = np.random.randint(0, len(tokens), size=batch_size)
+            batch_tokens = torch.from_numpy(
+                np.asarray(tokens[indices], dtype=np.float32)
+            ).to(device)
+            batch_valid = torch.from_numpy(np.asarray(valid[indices])).to(device)
+            with torch.autocast(
+                device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
+            ):
+                _, _, loss = model(batch_tokens, batch_valid)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            if step == 1 or step % log_interval == 0 or step == steps:
+                loss_value = float(loss)
+                progress.set_postfix(reconstruction_mse=f"{loss_value:.6f}")
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "reconstruction_mse": loss_value,
+                            "learning_rate": optimizer.param_groups[0]["lr"],
+                        },
+                        step=step,
+                    )
+            if step % save_every == 0 or step == steps:
+                _save_token(
+                    output_path / f"step_{step}.pt",
+                    model,
+                    optimizer,
+                    step,
+                    args,
+                    token_count,
+                    width,
                 )
-        if step % save_every == 0 or step == steps:
-            _save_token(
-                output_path / f"step_{step}.pt",
-                model,
-                optimizer,
-                step,
-                args,
-                token_count,
-                width,
-            )
+            progress.update(1)
     if wandb_run is not None:
         wandb_run.finish()
 

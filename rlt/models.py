@@ -101,12 +101,12 @@ class RLToken(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         z_rl = self.encode(tokens, valid)
         prediction = self.decode(z_rl, tokens)
-        error = (prediction.float() - tokens.detach().float()).square().mean(dim=-1)
+        error = (prediction.float() - tokens.detach().float()).square().sum(dim=-1)
         if valid is None:
-            loss = error.mean()
+            loss = error.sum(dim=1).mean()
         else:
             weights = valid.to(error.dtype)
-            loss = (error * weights).sum() / weights.sum().clamp_min(1)
+            loss = (error * weights).sum(dim=1).mean()
         return z_rl, prediction, loss
 
 
@@ -206,10 +206,7 @@ def reference_dropout(
 def actor_loss(
     action: torch.Tensor,
     reference: torch.Tensor,
-    q1: torch.Tensor,
-    q2: torch.Tensor,
+    q: torch.Tensor,
     beta: float = 1.0,
 ) -> torch.Tensor:
-    return (
-        -torch.minimum(q1, q2) + beta * (action - reference).square().flatten(1).sum(1)
-    ).mean()
+    return (-q + beta * (action - reference).square().flatten(1).sum(1)).mean()

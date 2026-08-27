@@ -1,0 +1,24 @@
+Training RL token:  10%|█████████▍                                                                                | 1045/10000 [07:41<1:05:50,  2.27step/s, reconstruction_mse=0.174414]
+Traceback (most recent call last):
+  File "/home/ai01/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/runpy.py", line 198, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ai01/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/runpy.py", line 88, in _run_code
+    exec(code, run_globals)
+  File "/home/ai01/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/__main__.py", line 71, in <module>
+    cli.main()
+  File "/home/ai01/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/../debugpy/server/cli.py", line 542, in main
+    run()
+  File "/home/ai01/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/../debugpy/server/cli.py", line 394, in run_module
+    run_module_as_main(options.target, alter_argv=True)
+  File "/home/ai01/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 228, in _run_module_as_main
+    return _run_code(code, main_globals, None, "__main__", mod_spec)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ai01/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 118, in _run_code
+    exec(code, run_globals)
+  File "/home/ai01/Downloads/RL_token/rlt/train_token.py", line 329, in <module>
+    arguments.function(arguments)
+  File "/home/ai01/Downloads/RL_token/rlt/train_token.py", line 244, in train
+    ).to(device)
+      ^^^^^^^^^^
+KeyboardInterrupt

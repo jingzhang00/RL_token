@@ -339,8 +339,8 @@ class Learner:
             )
             for parameter in self.critic.parameters():
                 parameter.requires_grad_(False)
-            aq1, aq2 = self.critic(batch["z"], batch["proprio"], action)
-            loss = actor_loss(action, batch["reference"], aq1, aq2, self.beta)
+            q, _ = self.critic(batch["z"], batch["proprio"], action)
+            loss = actor_loss(action, batch["reference"], q, self.beta)
             self.actor_opt.zero_grad(set_to_none=True)
             loss.backward()
             self.actor_opt.step()

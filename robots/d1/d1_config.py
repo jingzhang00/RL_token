@@ -118,16 +118,9 @@ def get_d1_configs():
                 base_config=DataConfig(prompt_from_task=True),
             ),
             weight_loader=weight_loaders.CheckpointWeightLoader(PI05_BASE_CKPT),
-            lr_schedule=_optimizer.CosineDecaySchedule(
-                warmup_steps=finetune["warmup_steps"],
-                peak_lr=finetune["peak_lr"],
-                decay_steps=finetune["decay_steps"],
-                decay_lr=finetune["decay_lr"],
-            ),
             optimizer=_optimizer.AdamW(
                 clip_gradient_norm=D1_FINETUNE_CLIP_GRADIENT_NORM
             ),
-            ema_decay=finetune["ema_decay"],
             batch_size=finetune["batch_size"],
             num_train_steps=finetune["steps"],
             log_interval=RLT_SETTINGS.log_interval,

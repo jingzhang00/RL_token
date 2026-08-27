@@ -17,6 +17,10 @@ def test_rl_token_shape_causality_and_stop_gradient():
     valid = torch.tensor([[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]], dtype=torch.bool)
     z, prediction, loss = model(tokens, valid)
     assert z.shape == (2, 16) and prediction.shape == tokens.shape and loss.ndim == 0
+    expected = (
+        (prediction.float() - tokens.float()).square().sum(dim=-1) * valid
+    ).sum(dim=1).mean()
+    assert torch.allclose(loss, expected)
 
     changed = tokens.clone()
     changed[:, 3:] += 100
@@ -81,8 +85,12 @@ def test_reference_dropout_and_twin_c_step_target():
 def test_eq5_uses_squared_l2_norm_and_c_step_rewards():
     action = torch.ones(1, 2, 3)
     reference = torch.zeros_like(action)
-    loss = actor_loss(action, reference, torch.zeros(1), torch.zeros(1))
+    loss = actor_loss(action, reference, torch.zeros(1))
     assert torch.equal(loss, torch.tensor(6.0))
+    assert torch.equal(
+        actor_loss(action, reference, torch.full((1,), 2.0), 0),
+        torch.tensor(-2.0),
+    )
 
     learner = Learner(Actor(8, 4, 2, 3), Critic(8, 4, 2, 3), horizon=2)
     for parameter in learner.target_critic.parameters():
