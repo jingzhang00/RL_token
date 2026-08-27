@@ -64,7 +64,7 @@ bash scripts/online.sh --execute --human
 
 - In `auto` mode, the VLA first fills the replay buffer to `online_rl.warmup_transitions`; after warmup, the program asks for confirmation before rollout. Each episode requires confirmation of the reset to the initial pose. Each subsequent episode starts with the VLA; press `c` to hand control to the RL policy. Use `--episodes N` to limit the number of episodes.
 - When `wandb_enabled: true`, WandB starts only after rollout is confirmed and logs episode metrics plus actor/critic training metrics. Set `WANDB_API_KEY` directly or put it in `wandb.env` before running `scripts/online.sh`.
-- The SQLite replay buffer and online learner checkpoint are stored under `online_rl.output/`; the checkpoint is automatically named `learner.pt`.
+- The SQLite replay buffer is stored under `online_rl.output/`; rollout checkpoints are saved under `online_rl.output/rollout/` as `learner_latest.pt` plus periodic `learner_step_<critic_steps>.pt` snapshots. `checkpoint_interval` counts critic update steps. The latest checkpoint is resumed automatically, or choose one with `--resume PATH`.
 
 ## Evaluation and checks
 

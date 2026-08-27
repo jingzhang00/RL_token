@@ -45,7 +45,7 @@ class Keys:
 class TrainerThread:
     def __init__(
         self, learner, replay, batch_size, checkpoint, lock, metadata, save_interval,
-        wandb_run=None,
+        wandb_run=None, snapshot_dir=None,
     ):
         self.learner, self.replay, self.batch_size, self.checkpoint, self.lock = (
             learner,
@@ -56,6 +56,8 @@ class TrainerThread:
         )
         self.metadata, self.save_interval = metadata, int(save_interval)
         self.wandb_run = wandb_run
+        self.snapshot_dir = Path(snapshot_dir or checkpoint.parent)
+        self.trained = False
         self.queue, self.stop = queue.Queue(), threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
 
@@ -70,6 +72,16 @@ class TrainerThread:
     def set_wandb_run(self, wandb_run):
         self.wandb_run = wandb_run
 
+    def _save_checkpoint(self, snapshot=False):
+        self.checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        self.learner.save(self.checkpoint, self.metadata)
+        if snapshot:
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+            self.learner.save(
+                self.snapshot_dir / f"learner_step_{self.learner.critic_steps}.pt",
+                self.metadata,
+            )
+
     def run(self):
         while not self.stop.is_set() or not self.queue.empty():
             try:
@@ -80,6 +92,8 @@ class TrainerThread:
                 updates = self.learner.update_for_new_transition(
                     self.replay, self.batch_size
                 )
+                if updates:
+                    self.trained = True
                 if updates and self.wandb_run is not None:
                     actor_losses = [item["actor_loss"] for item in updates if "actor_loss" in item]
                     self.wandb_run.log(
@@ -111,12 +125,13 @@ class TrainerThread:
                         }
                     )
                 if updates and self.learner.critic_steps % self.save_interval == 0:
-                    self.learner.save(self.checkpoint, self.metadata)
+                    self._save_checkpoint(snapshot=True)
 
     def __exit__(self, *_):
         self.stop.set()
         self.thread.join()
-        self.learner.save(self.checkpoint, self.metadata)
+        if self.trained:
+            self._save_checkpoint()
 
 
 def _read_episode_label() -> bool:
@@ -366,7 +381,18 @@ def run(args, hardware_cls) -> None:
     args.port = args.port or int(settings.runtime["feature_port"])
     args.learner_device = args.learner_device or settings.runtime["learner_device"]
     args.output = Path(args.output or settings.online_rl["output"])
-    checkpoint = args.actor_checkpoint or args.output / "learner.pt"
+    rollout_output = args.output / "rollout"
+    checkpoint = rollout_output / "learner_latest.pt"
+    resume_checkpoint = args.resume or args.actor_checkpoint
+    if resume_checkpoint is None:
+        for candidate in (checkpoint, args.output / "learner.pt"):
+            if candidate.exists():
+                resume_checkpoint = candidate
+                break
+    if resume_checkpoint is not None:
+        resume_checkpoint = Path(resume_checkpoint)
+        if not resume_checkpoint.exists():
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_checkpoint}")
     args.batch_size = int(args.batch_size or settings.online_rl["batch_size"])
     warmup_transitions = int(settings.online_rl["warmup_transitions"])
     args.max_arm_delta_deg = float(
@@ -403,9 +429,9 @@ def run(args, hardware_cls) -> None:
     z_dim = int(metadata.get("z_dim", 2048))
     action_dim = int(metadata.get("action_dim", len(q01)))
     proprio_dim = getattr(hardware_cls, "proprio_dim", None)
-    if checkpoint.exists():
+    if resume_checkpoint is not None:
         action_dim, proprio_dim = _learner_dimensions(
-            checkpoint, z_dim, settings.action_horizon
+            resume_checkpoint, z_dim, settings.action_horizon
         )
     if action_dim != len(q01):
         raise ValueError(
@@ -454,8 +480,8 @@ def run(args, hardware_cls) -> None:
         ),
         device=learner_device,
     )
-    if checkpoint.exists():
-        learner.load(checkpoint)
+    if resume_checkpoint is not None:
+        learner.load(resume_checkpoint)
     learner_metadata = {
         "config": str(settings.path),
         "task": settings.task,
@@ -489,6 +515,7 @@ def run(args, hardware_cls) -> None:
                 learner_metadata,
                 settings.online_rl["checkpoint_interval"],
                 wandb_run,
+                rollout_output,
             ) as trainer,
         ):
             episode = 0

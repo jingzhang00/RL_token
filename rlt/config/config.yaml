@@ -49,7 +49,7 @@ rl_token:
 online_rl:
   gamma: 0.99
   sigma: 0.05
-  beta: 1.0
+  beta: 0.9
   reference_dropout: 0.5
   actor_lr: 3.0e-4
   critic_lr: 3.0e-4
@@ -60,7 +60,7 @@ online_rl:
   warmup_transitions: 1000
   replay_capacity: 100000
   output: checkpoints/online
-  checkpoint_interval: 100
+  checkpoint_interval: 200
   evaluation_episodes: 50
 
 tasks:

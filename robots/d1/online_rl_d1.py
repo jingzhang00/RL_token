@@ -256,6 +256,11 @@ def main() -> None:
         help="Online actor/critic device; auto uses CUDA when available.",
     )
     parser.add_argument("--actor-checkpoint", type=Path)
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        help="Resume from a learner checkpoint; default uses the latest rollout checkpoint.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--max-arm-delta-deg", type=float)
