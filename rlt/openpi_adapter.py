@@ -49,7 +49,7 @@ class OpenPIAdapter:
         self.model = self.policy._model
         self.num_steps = int(num_steps)
         self.rng = jax.random.key(int(seed))
-        self.action_dim = int(getattr(self.model, "action_dim", settings.action_dim))
+        self.action_dim = settings.action_dim
         self._shared = self._compile_shared_forward()
 
     def _compile_shared_forward(self):
