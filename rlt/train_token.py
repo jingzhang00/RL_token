@@ -252,7 +252,7 @@ def train(args: argparse.Namespace) -> None:
             optimizer.step()
             if step == 1 or step % log_interval == 0 or step == steps:
                 loss_value = float(loss)
-                progress.set_postfix(reconstruction_mse=f"{loss_value:.6f}")
+                # progress.set_postfix(reconstruction_mse=f"{loss_value:.6f}")
                 if wandb_run is not None:
                     wandb_run.log(
                         {
