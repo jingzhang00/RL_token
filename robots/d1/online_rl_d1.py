@@ -198,6 +198,26 @@ class D1Hardware:
     def move_to_initial_pose(self):
         if not self.args.execute:
             return
+        from beingbeyond_d1_edu_sdk.core._head_arm_core import HeadArmCore
+
+        for home_deg in (
+            HeadArmCore.HOME_1_Q_DEG,
+            HeadArmCore.HOME_2_Q_DEG,
+            HeadArmCore.HOME_3_Q_DEG,
+        ):
+            home_rad = np.deg2rad(home_deg).tolist()
+            home_rad[:2] = HEAD.tolist()
+            self.robot.head_arm._core._set_positions_without_limit_clip(home_rad)
+            result = self.robot.head_arm.wait_until_reached(
+                home_rad,
+                active_joint_indices=range(8),
+                pos_tol_deg=5.0,
+                vel_tol_deg_s=20.0,
+                timeout_s=15.0,
+            )
+            if result is None or result is False:
+                raise RuntimeError("robot did not reach the homing pose within 15 seconds")
+
         headarm_command = np.concatenate([HEAD, self.initial_state[:6]]).astype(float)
         self.robot.head_arm.set_positions(headarm_command.tolist())
         self.robot.hand.set_joint_pos(self.initial_state[6:].astype(float).tolist())

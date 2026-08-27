@@ -151,17 +151,17 @@ def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
         return
 
     if first:
-        input("Calibration: press Enter to restore the initial pose")
+        input("Calibration: press Enter to run homing, then restore the initial state")
     else:
-        input("Episode recorded. Reset robot/task, then press Enter to restore the initial pose")
+        input("Episode recorded. Reset robot/task, then press Enter to run homing and restore the initial state")
     move_to_initial_pose()
     start_camera_thread = getattr(hardware, "start_camera_thread", None)
     if start_camera_thread is not None:
         start_camera_thread()
     if first:
-        input(f"Initial pose reached. Reset robot/task for {phase} episode {episode}; press Enter")
+        input(f"Initial state reached. Reset robot/task for {phase} episode {episode}; press Enter")
     else:
-        input("Initial pose reached. Press Enter to start the next episode")
+        input("Initial state reached. Press Enter to start the next episode")
 
 
 def _confirm_rollout() -> bool:
