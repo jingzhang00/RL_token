@@ -1,0 +1,74 @@
+task: d1
+wandb_enabled: true
+project_name: openpi
+log_interval: 100
+
+vla:
+  config_name: pi05_d1
+  output: checkpoints/vla
+  base_checkpoint: models/openpi-assets/checkpoints/pi05_base/params
+  dataset: dataset/pick_up_the_doll_and_place_it_on_the_plate
+  prompt: Pick up the doll and place it on the plate
+  # Flow-matching inference steps
+  inference_steps: 10
+  model:
+    pi05: true
+    discrete_state_input: true
+  # The paper uses base + two wrist cameras. D1 currently supplies only base_0_rgb.
+  rl_token_cameras: [base_0_rgb]
+  finetune:
+    enabled: true
+    steps: 5000
+    batch_size: 128
+    warmup_steps: 1000
+    peak_lr: 2.5e-5
+    decay_steps: 30000
+    decay_lr: 2.5e-6
+    ema_decay: 0.999
+    save_interval: 1000
+    keep_period: 15000
+    num_workers: 8
+    fsdp_devices: 4
+    exp_name: d1
+    overwrite: true
+    resume: false
+
+rl_token:
+  heads: 8
+  layers: 2
+  mlp_ratio: 4
+  steps: 5000
+  batch_size: 4
+  learning_rate: 1.0e-4
+  save_every: 500
+  exp_name: rlt_token_d1
+  seed: 42
+  device: cuda
+  output: checkpoints/rlt_token
+  cache_output: checkpoints/rlt_cache
+
+online_rl:
+  gamma: 0.99
+  sigma: 0.05
+  beta: 1.0
+  reference_dropout: 0.5
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+  tau: 0.005
+  actor_update_period: 2
+  critic_updates_per_transition: 5
+  batch_size: 256
+  warmup_transitions: 256
+  replay_capacity: 100000
+  output: checkpoints/online
+  checkpoint_interval: 100
+  evaluation_episodes: 50
+
+tasks:
+  default:
+    actor_hidden_dim: 256
+    actor_num_layers: 2
+    critic_hidden_dim: 256
+    critic_num_layers: 2
+  screw_installation:
+    actor_hidden_dim: 512

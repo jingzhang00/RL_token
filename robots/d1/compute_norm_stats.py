@@ -2,7 +2,8 @@
 
 import tyro
 
-from d1.train import UPSTREAM_ROOT, _load, load_config
+from rlt.finetune_vla import _load
+from robots.d1.train import UPSTREAM_ROOT, load_config
 
 
 def main() -> None:

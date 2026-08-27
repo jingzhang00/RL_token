@@ -10,15 +10,21 @@ import openpi.shared.normalize as _normalize
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
-from d1 import d1_policy
+from robots.d1 import d1_policy
+from rlt.settings import load_config
 
-OPENPI_WORKSPACE = pathlib.Path(__file__).resolve().parents[1]
-D1_REPO_ID = os.environ.get("D1_REPO_ID")
-PI05_BASE_CKPT = os.environ.get("PI05_BASE_CKPT")
+OPENPI_WORKSPACE = pathlib.Path(__file__).resolve().parents[2]
+RLT_SETTINGS = load_config()
+D1_REPO_ID = os.environ.get("D1_REPO_ID", str(RLT_SETTINGS.vla["dataset"]))
+PI05_BASE_CKPT = os.environ.get(
+    "PI05_BASE_CKPT", str(RLT_SETTINGS.vla["base_checkpoint"])
+)
+D1_FINETUNE_CLIP_GRADIENT_NORM = 1.0
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotD1DataConfig:
     repo_id: str
+    action_dim: int
     base_config: object | None = None
     use_quantile_norm: bool | None = None
 
@@ -37,7 +43,7 @@ class LeRobotD1DataConfig:
         )
         data_transforms = _transforms.Group(
             inputs=[d1_policy.D1Inputs()],
-            outputs=[d1_policy.D1Outputs()],
+            outputs=[d1_policy.D1Outputs(self.action_dim)],
         )
         delta_action_mask = _transforms.make_bool_mask(6, -6)
         data_transforms = data_transforms.push(
@@ -94,29 +100,45 @@ def get_d1_configs():
     from openpi.training.config import DataConfig
     from openpi.training.config import TrainConfig
 
+    finetune = RLT_SETTINGS.vla_finetune
+    action_dim = RLT_SETTINGS.action_dim
     return [
         TrainConfig(
-            name="pi05_d1",
-            model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=True),
+            name=RLT_SETTINGS.vla["config_name"],
+            project_name=RLT_SETTINGS.project_name,
+            exp_name=finetune["exp_name"],
+            model=pi0_config.Pi0Config(
+                pi05=RLT_SETTINGS.vla["model"]["pi05"],
+                action_dim=action_dim,
+                action_horizon=RLT_SETTINGS.vla_horizon,
+                discrete_state_input=RLT_SETTINGS.vla["model"]["discrete_state_input"],
+            ),
             data=LeRobotD1DataConfig(
                 repo_id=D1_REPO_ID,
+                action_dim=action_dim,
                 base_config=DataConfig(prompt_from_task=True),
             ),
             weight_loader=weight_loaders.CheckpointWeightLoader(PI05_BASE_CKPT),
             lr_schedule=_optimizer.CosineDecaySchedule(
-                warmup_steps=1_000,
-                peak_lr=2.5e-5,
-                decay_steps=30_000,
-                decay_lr=2.5e-6,
+                warmup_steps=finetune["warmup_steps"],
+                peak_lr=finetune["peak_lr"],
+                decay_steps=finetune["decay_steps"],
+                decay_lr=finetune["decay_lr"],
             ),
-            optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-            ema_decay=0.999,
-            batch_size=128,
-            num_train_steps=30_000,
-            save_interval=1_000,
-            keep_period=15_000,
-            # ponytail: single-process stats avoids wrapper pickling; restore workers after an importable stats module.
-            num_workers=0,
-            fsdp_devices=4,
+            optimizer=_optimizer.AdamW(
+                clip_gradient_norm=D1_FINETUNE_CLIP_GRADIENT_NORM
+            ),
+            ema_decay=finetune["ema_decay"],
+            batch_size=finetune["batch_size"],
+            num_train_steps=finetune["steps"],
+            log_interval=RLT_SETTINGS.log_interval,
+            save_interval=finetune["save_interval"],
+            keep_period=finetune["keep_period"],
+            checkpoint_base_dir=RLT_SETTINGS.vla["output"],
+            overwrite=finetune["overwrite"],
+            resume=finetune["resume"],
+            wandb_enabled=RLT_SETTINGS.wandb_enabled,
+            num_workers=finetune["num_workers"],
+            fsdp_devices=finetune["fsdp_devices"],
         )
     ]

@@ -1,0 +1,22 @@
+runtime:
+  # Robot/runtime settings. Durations below are converted to control steps.
+  control_hz: 10
+  rl_chunk_duration_s: 0.2
+  vla_horizon_duration_s: 1.0
+  transition_stride_steps: 2
+  max_arm_delta_deg: 12
+  learner_device: auto
+  feature_host: 127.0.0.1
+  feature_port: 5556
+  critical_timeout_s: 20
+  full_timeout_s: 30
+
+hardware:
+  arm_baud: 1000000
+  hand_type: right
+  hand_can: can0
+  hand_baud: 1000000
+  arm_dev: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E115148-if00
+  camera_device: /dev/v4l/by-id/usb-SunplusIT_Inc_SPCA2100_PC_Camera-video-index0
+  exo_port: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+  glove_port: /dev/ttyACM0 

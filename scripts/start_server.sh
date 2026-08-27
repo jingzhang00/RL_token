@@ -2,10 +2,13 @@
 set -euo pipefail
 
 OPENPI_WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OPENPI_PYTHON="${OPENPI_PYTHON:-python}"
-OPENPI_ROOT="${OPENPI_ROOT:-${OPENPI_WORKSPACE}/train/openpi}"
-POLICY_CONFIG="${POLICY_CONFIG:-pi05_d1}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-${OPENPI_ROOT}/checkpoints/4000}"
+OPENPI_PYTHON="${OPENPI_PYTHON:-${OPENPI_WORKSPACE}/.venv/bin/python}"
+OPENPI_ROOT="${OPENPI_ROOT:-${OPENPI_WORKSPACE}/openpi}"
+RLT_CONFIG="${RLT_CONFIG:-${OPENPI_WORKSPACE}/rlt/config/config.yaml}"
+export RLT_CONFIG
+POLICY_CONFIG="${POLICY_CONFIG:-$(${OPENPI_PYTHON} -c 'from rlt.settings import load_config; print(load_config().vla["config_name"])')}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-$(${OPENPI_PYTHON} -c 'from rlt.settings import load_config; print(load_config().vla_checkpoint)')}"
+DEFAULT_PROMPT="$(${OPENPI_PYTHON} -c 'from rlt.settings import load_config; print(load_config().vla["prompt"])')"
 
 
 export OPENPI_WORKSPACE
@@ -21,5 +24,5 @@ exec "${OPENPI_PYTHON}" "${OPENPI_WORKSPACE}/inference/serve_d1_policy.py" \
   --port "${OPENPI_PORT:-5555}" \
   --config "${POLICY_CONFIG}" \
   --checkpoint-dir "${CHECKPOINT_DIR}" \
-  --default-prompt "Pick up the doll and place it on the plate"
+  --default-prompt "${DEFAULT_PROMPT}" \
   "$@"

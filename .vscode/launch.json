@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "RLT stage 1: cache VLA features",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "rlt.train_token",
+            "args": [
+                "cache",
+                "--config",
+                "${workspaceFolder}/rlt/config/config.yaml"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "RLT_CONFIG": "${workspaceFolder}/rlt/config/config.yaml",
+                "PYTHONPATH": "${workspaceFolder}:${workspaceFolder}/openpi/src:${workspaceFolder}/openpi/packages/openpi-client/src"
+            }
+        },
+        {
+            "name": "RLT stage 1: train token",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "rlt.train_token",
+            "args": [
+                "train",
+                "--config",
+                "${workspaceFolder}/rlt/config/config.yaml"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "RLT_CONFIG": "${workspaceFolder}/rlt/config/config.yaml",
+                "PYTHONPATH": "${workspaceFolder}:${workspaceFolder}/openpi/src:${workspaceFolder}/openpi/packages/openpi-client/src"
+            }
+        }
+    ]
+}

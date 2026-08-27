@@ -7,7 +7,6 @@ from openpi import transforms
 
 
 STATE_DIM = 12
-ACTION_DIM = 12
 
 
 def _parse_image(image) -> np.ndarray:
@@ -60,7 +59,7 @@ class D1Inputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class D1Outputs(transforms.DataTransformFn):
-    action_dim: int = ACTION_DIM
+    action_dim: int
 
     def __call__(self, data: dict) -> dict:
         return {"actions": np.asarray(data["actions"][:, : self.action_dim], dtype=np.float32)}
