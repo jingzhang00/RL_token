@@ -63,7 +63,9 @@ online_rl:
   replay_capacity: 2000000
   output: checkpoints/online
   # Optional learner checkpoint; CLI --resume takes precedence.
-  resume: null
+  # resume: null
+  # resume: checkpoints/online/rollout/learner_latest.pt
+  resume: checkpoints/online/rollout/learner_step_20000.pt
   checkpoint_interval: 10000
   evaluation_episodes: 50
 
