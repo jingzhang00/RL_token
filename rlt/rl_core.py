@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -49,7 +50,12 @@ def _array(blob: bytes) -> np.ndarray:
 
 
 class Replay:
-    def __init__(self, path: str | Path, capacity: int = 100_000) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        capacity: int = 100_000,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         self.capacity = int(capacity)
         if self.capacity < 1:
             raise ValueError("capacity must be positive")
@@ -68,6 +74,26 @@ class Replay:
         }
         if "rewards" not in columns:
             self.db.execute("ALTER TABLE transitions ADD COLUMN rewards BLOB")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS replay_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        if metadata is not None:
+            expected = {key: json.dumps(value, sort_keys=True) for key, value in metadata.items()}
+            stored = dict(self.db.execute("SELECT key, value FROM replay_metadata"))
+            if stored:
+                if stored != expected:
+                    raise ValueError(
+                        f"replay metadata mismatch for {path}: stored={stored}, expected={expected}"
+                    )
+            elif self.db.execute("SELECT 1 FROM transitions LIMIT 1").fetchone() is not None:
+                raise ValueError(
+                    f"replay {path} has data but no metadata; archive it before changing H/C"
+                )
+            else:
+                self.db.executemany(
+                    "INSERT INTO replay_metadata(key, value) VALUES(?, ?)",
+                    expected.items(),
+                )
         self.db.commit()
 
     def __len__(self) -> int:
@@ -155,59 +181,81 @@ def make_proprio(
     return np.concatenate([position, velocity]).astype(np.float32)
 
 
+def _source_segments(ticks: list[dict]) -> list[list[dict]]:
+    segments: list[list[dict]] = []
+    current: list[dict] = []
+    source = None
+    for tick in ticks:
+        if current and (tick["source"] != source or current[-1].get("done")):
+            segments.append(current)
+            current = []
+        if not current:
+            source = tick["source"]
+        current.append(tick)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _reference_for(
+    tick: dict, action: np.ndarray, horizon: int
+) -> np.ndarray:
+    if tick["source"] == "human":
+        return action.copy()
+    value = np.asarray(
+        tick.get("reference_chunk", tick["reference"]), dtype=np.float32
+    )
+    if value.shape == action.shape:
+        return value.copy()
+    if value.ndim == 2 and value.shape[1] == action.shape[1] and value.shape[0] >= horizon:
+        return value[:horizon].copy()
+    return np.stack([tick["reference"] for _ in range(horizon)]).astype(np.float32)
+
+
 def build_transitions(
     ticks: list[dict], horizon: int = 10, stride: int = 2
 ) -> list[Transition]:
-    """Create stride-spaced C-step windows with aligned references and rewards."""
+    """Create stride-spaced C-step windows without crossing source segments."""
     if horizon < 1 or stride < 1:
         raise ValueError("horizon and stride must be positive")
     result = []
-    for start in range(0, len(ticks), stride):
-        window = ticks[start : start + horizon]
-        terminal_index = next(
-            (index for index, tick in enumerate(window) if tick.get("done")), None
-        )
-        if terminal_index is None and len(window) < horizon:
-            break
-        if terminal_index is not None:
-            window = window[: terminal_index + 1]
-        sources = {tick["source"] for tick in window}
-        padded = window + [window[-1]] * (horizon - len(window))
-        action = np.stack([tick["action"] for tick in padded]).astype(np.float32)
-        reference = np.asarray(
-            ticks[start].get("reference_chunk", ticks[start]["reference"]),
-            dtype=np.float32,
-        )[:horizon].copy()
-        if reference.shape != action.shape:
-            reference = np.stack([tick["reference"] for tick in padded]).astype(np.float32)
-        for index, tick in enumerate(window):
-            if tick["source"] == "human":
-                reference[index] = tick["action"]
-        terminal = window[-1] if terminal_index is not None else None
-        nxt = ticks[min(start + horizon, len(ticks) - 1)]
-        next_reference = np.asarray(
-            nxt.get("reference_chunk", nxt["reference"]), dtype=np.float32
-        )[:horizon].copy()
-        if next_reference.shape != action.shape:
-            next_reference = np.stack([tick["reference"] for tick in padded]).astype(np.float32)
-        rewards = np.zeros(horizon, dtype=np.float32)
-        rewards[: len(window)] = [float(tick.get("reward", 0.0)) for tick in window]
-        source = next(iter(sources)) if len(sources) == 1 else "mixed"
-        result.append(
-            Transition(
-                np.asarray(ticks[start]["z"], np.float32),
-                reference,
-                action,
-                float(terminal.get("reward", 0.0) if terminal else 0.0),
-                np.asarray(nxt["z"], np.float32),
-                next_reference,
-                np.asarray(ticks[start]["proprio"], np.float32),
-                np.asarray(nxt["proprio"], np.float32),
-                source,
-                terminal is not None,
-                rewards,
+    for segment in _source_segments(ticks):
+        for start in range(0, len(segment), stride):
+            window = segment[start : start + horizon]
+            terminal_index = next(
+                (index for index, tick in enumerate(window) if tick.get("done")), None
             )
-        )
+            if terminal_index is None and len(window) < horizon:
+                break
+            if terminal_index is not None:
+                window = window[: terminal_index + 1]
+            padded = window + [window[-1]] * (horizon - len(window))
+            action = np.stack([tick["action"] for tick in padded]).astype(np.float32)
+            reference = _reference_for(segment[start], action, horizon)
+            terminal = window[-1] if terminal_index is not None else None
+            nxt = (
+                window[-1]
+                if terminal is not None
+                else segment[min(start + horizon, len(segment) - 1)]
+            )
+            next_reference = _reference_for(nxt, action, horizon)
+            rewards = np.zeros(horizon, dtype=np.float32)
+            rewards[: len(window)] = [float(tick.get("reward", 0.0)) for tick in window]
+            result.append(
+                Transition(
+                    np.asarray(segment[start]["z"], np.float32),
+                    reference,
+                    action,
+                    float(terminal.get("reward", 0.0) if terminal else 0.0),
+                    np.asarray(nxt["z"], np.float32),
+                    next_reference,
+                    np.asarray(segment[start]["proprio"], np.float32),
+                    np.asarray(nxt["proprio"], np.float32),
+                    segment[start]["source"],
+                    terminal is not None,
+                    rewards,
+                )
+            )
     return result
 
 
@@ -255,7 +303,11 @@ class Learner:
         self.critic_updates_per_transition = int(critic_updates_per_transition)
         if self.actor_update_period < 1 or self.critic_updates_per_transition < 1:
             raise ValueError("update periods must be positive")
-        self.device, self.critic_steps, self.actor_steps = device, 0, 0
+        self.device = device
+        self.critic_steps = 0
+        self.actor_steps = 0
+        self.online_critic_steps = 0
+        self.online_actor_steps = 0
 
     @property
     def target_discount(self) -> float:
@@ -320,7 +372,9 @@ class Learner:
             reward = (batch["rewards"] * discounts).sum(dim=1)
             return reward + (1 - batch["done"]) * self.target_discount * torch.minimum(q1, q2)
 
-    def update(self, rows: Iterable[Transition]) -> dict[str, float]:
+    def update(
+        self, rows: Iterable[Transition], *, online: bool = False
+    ) -> dict[str, float]:
         batch = self._batch(rows)
         target = self.td_target(batch)
         q1, q2 = self.critic(batch["z"], batch["proprio"], batch["action"])
@@ -329,6 +383,8 @@ class Learner:
         critic_loss.backward()
         self.critic_opt.step()
         self.critic_steps += 1
+        if online:
+            self.online_critic_steps += 1
         q_min = torch.minimum(q1, q2)
         metrics = {
             "critic_loss": float(critic_loss.detach()),
@@ -355,17 +411,19 @@ class Learner:
             for parameter in self.critic.parameters():
                 parameter.requires_grad_(True)
             self.actor_steps += 1
+            if online:
+                self.online_actor_steps += 1
             metrics["actor_loss"] = float(loss.detach())
             self._soft_update()
         return metrics
 
     def update_for_new_transition(
-        self, replay: Replay, batch_size: int = 256
+        self, replay: Replay, batch_size: int = 256, *, online: bool = True
     ) -> list[dict[str, float]]:
         if len(replay) < batch_size:
             return []
         return [
-            self.update(replay.sample(batch_size))
+            self.update(replay.sample(batch_size), online=online)
             for _ in range(self.critic_updates_per_transition)
         ]
 
@@ -391,6 +449,8 @@ class Learner:
                 "critic_opt": self.critic_opt.state_dict(),
                 "critic_steps": self.critic_steps,
                 "actor_steps": self.actor_steps,
+                "online_critic_steps": self.online_critic_steps,
+                "online_actor_steps": self.online_actor_steps,
                 "metadata": metadata or {},
             },
             path,
@@ -403,4 +463,6 @@ class Learner:
         self.actor_opt.load_state_dict(data["actor_opt"])
         self.critic_opt.load_state_dict(data["critic_opt"])
         self.critic_steps, self.actor_steps = data["critic_steps"], data["actor_steps"]
+        self.online_critic_steps = int(data.get("online_critic_steps", 0))
+        self.online_actor_steps = int(data.get("online_actor_steps", 0))
         return data.get("metadata", {})

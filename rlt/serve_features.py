@@ -85,7 +85,7 @@ def main() -> None:
     metadata = {
         "z_dim": token.width,
         "action_horizon": settings.action_horizon,
-        "chunk_len": settings.action_horizon,
+        "chunk_len": settings.chunk_length,
         "action_dim": settings.action_dim,
         "action_q01": stats["q01"],
         "action_q99": stats["q99"],

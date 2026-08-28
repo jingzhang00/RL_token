@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-commit_message="${*:-ver0}"
+commit_message="${*:-ver1: two phase training; fixed warmup, buffer and training }"
 
 git rev-parse --is-inside-work-tree >/dev/null
 git add -A

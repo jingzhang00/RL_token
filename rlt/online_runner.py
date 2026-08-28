@@ -19,6 +19,8 @@ import torch
 
 from openpi_client.websocket_client_policy import WebsocketClientPolicy
 from rlt.actions import (
+    ARM_HIGH,
+    ARM_LOW,
     absolute_to_normalized,
     normalized_to_absolute,
     safe_command,
@@ -90,7 +92,7 @@ class TrainerThread:
                 continue
             with self.lock:
                 updates = self.learner.update_for_new_transition(
-                    self.replay, self.batch_size
+                    self.replay, self.batch_size, online=True
                 )
                 if updates:
                     self.trained = True
@@ -99,26 +101,27 @@ class TrainerThread:
                     self.wandb_run.log(
                         {
                             "critic_step": self.learner.critic_steps,
-                            "train/critic_loss": sum(item["critic_loss"] for item in updates)
+                            "online/critic_step": self.learner.online_critic_steps,
+                            "online/critic_loss": sum(item["critic_loss"] for item in updates)
                             / len(updates),
-                            "train/q1_mean": sum(item["q1_mean"] for item in updates)
+                            "online/q1_mean": sum(item["q1_mean"] for item in updates)
                             / len(updates),
-                            "train/q2_mean": sum(item["q2_mean"] for item in updates)
+                            "online/q2_mean": sum(item["q2_mean"] for item in updates)
                             / len(updates),
-                            "train/q_min_mean": sum(item["q_min_mean"] for item in updates)
+                            "online/q_min_mean": sum(item["q_min_mean"] for item in updates)
                             / len(updates),
-                            "train/target_q_mean": sum(
+                            "online/target_q_mean": sum(
                                 item["target_q_mean"] for item in updates
                             )
                             / len(updates),
-                            "train/td_error_abs": sum(
+                            "online/td_error_abs": sum(
                                 item["td_error_abs"] for item in updates
                             )
                             / len(updates),
-                            "train/actor_step": self.learner.actor_steps,
-                            "train/replay_size": len(self.replay),
+                            "online/actor_step": self.learner.online_actor_steps,
+                            "online/replay_size": len(self.replay),
                             **(
-                                {"train/actor_loss": sum(actor_losses) / len(actor_losses)}
+                                {"online/actor_loss": sum(actor_losses) / len(actor_losses)}
                                 if actor_losses
                                 else {}
                             ),
@@ -164,16 +167,6 @@ def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
         input("Initial state reached. Press Enter to start the next episode")
 
 
-def _confirm_rollout() -> bool:
-    while True:
-        answer = input("Warmup is complete. Start rollout? [y/n]: ").strip().lower()
-        if answer in {"y", "yes"}:
-            return True
-        if answer in {"n", "no", "q", "quit", ""}:
-            return False
-        print("Please enter y or n.")
-
-
 def _init_wandb(settings, args, learner, warmup_transitions):
     import wandb
 
@@ -185,25 +178,33 @@ def _init_wandb(settings, args, learner, warmup_transitions):
             "task": settings.task,
             "phase": args.phase,
             "control_hz": settings.control_hz,
-            "action_horizon": settings.action_horizon,
+            "vla_horizon": settings.action_horizon,
+            "chunk_length": settings.chunk_length,
             "batch_size": args.batch_size,
             "warmup_transitions": warmup_transitions,
+            "offline_warmup_updates": int(settings.online_rl["offline_warmup_updates"]),
             "learner_device": str(learner.device),
             "online_rl": settings.online_rl,
         },
     )
-    wandb_run.define_metric("train/*", step_metric="critic_step")
+    wandb_run.define_metric("bootstrap/*", step_metric="bootstrap/critic_step")
+    wandb_run.define_metric("online/*", step_metric="online/critic_step")
     wandb_run.define_metric("episode/*", step_metric="episode")
     return wandb_run
 
 
 def _learner_dimensions(
-    path: Path, z_dim: int, chunk_len: int
+    path: Path, z_dim: int, chunk_len: int, vla_horizon: int
 ) -> tuple[int, int]:
     """Read dimensions from a learner checkpoint, including old checkpoints."""
     data = torch.load(path, map_location="cpu", weights_only=False)
     saved = data.get("metadata", {})
     saved = saved if isinstance(saved, dict) else {}
+    for key, expected in (("C", chunk_len), ("H", vla_horizon)):
+        if key in saved and int(saved[key]) != expected:
+            raise ValueError(
+                f"checkpoint {path} has {key}={saved[key]}, expected {key}={expected}"
+            )
     action_dim = saved.get("action_dim")
     proprio_dim = saved.get("proprio_dim")
     if action_dim is None or proprio_dim is None:
@@ -231,29 +232,63 @@ def _learner_dimensions(
     return action_dim, proprio_dim
 
 
+def _offline_warmup(
+    learner,
+    replay,
+    updates: int,
+    batch_size: int,
+    wandb_run=None,
+    log_interval: int = 100,
+) -> None:
+    if len(replay) < batch_size:
+        raise ValueError(
+            f"warmup replay has {len(replay)} transitions, need {batch_size}"
+        )
+    for index in range(1, updates + 1):
+        metrics = learner.update(replay.sample(batch_size))
+        if wandb_run is not None and (
+            index == 1 or index == updates or index % log_interval == 0
+        ):
+            payload = {
+                "bootstrap/critic_step": index,
+                "bootstrap/critic_loss": metrics["critic_loss"],
+                "bootstrap/q1_mean": metrics["q1_mean"],
+                "bootstrap/q2_mean": metrics["q2_mean"],
+                "bootstrap/q_min_mean": metrics["q_min_mean"],
+                "bootstrap/target_q_mean": metrics["target_q_mean"],
+                "bootstrap/td_error_abs": metrics["td_error_abs"],
+            }
+            if "actor_loss" in metrics:
+                payload["bootstrap/actor_step"] = learner.actor_steps
+                payload["bootstrap/actor_loss"] = metrics["actor_loss"]
+            wandb_run.log(payload)
+
+
 def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     """Collect one episode through the robot adapter's small hardware protocol."""
-    warmup = phase == "warmup" or getattr(args, "auto_warmup", False)
-    critical = not warmup and (phase == "critical" or (
-        phase == "eval-rlt" and args.eval_task == "critical"
-    ))
+    warmup = phase == "warmup"
+    actor_phase = phase in {"critical-only", "full-task", "eval-rlt"}
+    critical = False
     human = False
     aborted = False
     ticks = []
     previous = None
+    vla_chunk = None
+    vla_offset = args.chunk_len
     actor_chunk = None
-    actor_offset = 0
+    actor_offset = args.chunk_len
+    vla_approved = False
+    handoff_requested = False
     started = time.monotonic()
     timeout = (
         args.critical_timeout_s
-        if phase == "critical"
-        or (phase.startswith("eval") and args.eval_task == "critical")
+        if phase.startswith("eval") and args.eval_task == "critical-only"
         else args.full_timeout_s
     )
     period = 1.0 / args.control_hz
     print(
-        f"\n{phase}: Enter=end episode, c=enter critical, space=human, "
-        f"s/f=label after ending, q=abort "
+        f"\n{phase}: Enter=end episode, c=handoff, y=approve VLA chunk, "
+        f"space=human, s/f=label after ending, q=abort "
         f"(timeout {timeout}s)"
     )
     with Keys() as keys:
@@ -268,9 +303,18 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     ticks[-1]["done"] = True
                     break
                 continue
-            if key == "c" and not warmup:
-                critical = True
-                actor_chunk = None
+            if key == "y" and phase == "critical-only" and not critical:
+                vla_approved = True
+            if key == "c" and not warmup and not critical:
+                if phase == "eval-base":
+                    critical = True
+                elif human or vla_chunk is None or vla_offset >= args.chunk_len:
+                    critical = True
+                else:
+                    handoff_requested = True
+                if critical:
+                    actor_chunk = None
+                    actor_offset = args.chunk_len
             if key == " ":
                 human = not human
                 if human:
@@ -278,6 +322,11 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         previous if previous is not None else hardware.read()[1]
                     )
                 actor_chunk = None
+                actor_offset = args.chunk_len
+                vla_chunk = None
+                vla_offset = args.chunk_len
+                vla_approved = False
+                handoff_requested = False
 
             image, state = hardware.read()
             proprio = make_proprio(state, previous, dt=period)
@@ -292,23 +341,40 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 )
                 z = np.asarray(features["z"], np.float32)
                 reference_chunk = np.asarray(features["reference"], np.float32)[
-                    : args.chunk_len
+                    : args.vla_horizon
                 ]
-                absolute_reference = np.asarray(features["absolute"], np.float32)
+                if reference_chunk.shape[0] < args.vla_horizon:
+                    raise ValueError(
+                        f"VLA reference has {reference_chunk.shape[0]} steps, "
+                        f"need H={args.vla_horizon}"
+                    )
             except Exception:
                 logging.exception("VLA/feature failure: command paused")
                 time.sleep(max(0, period - (time.monotonic() - tick_start)))
                 continue
 
-            source = (
-                "human"
-                if human
-                else (
-                    "actor"
-                    if critical and phase not in {"warmup", "eval-base"}
-                    else "vla"
-                )
-            )
+            if (
+                not human
+                and not critical
+                and handoff_requested
+                and (vla_chunk is None or vla_offset >= args.chunk_len)
+            ):
+                critical = True
+                handoff_requested = False
+                actor_chunk = None
+                actor_offset = args.chunk_len
+
+            source = "human" if human else "actor" if critical and actor_phase else "vla"
+            if (
+                source == "vla"
+                and (vla_chunk is None or vla_offset >= args.chunk_len)
+            ):
+                vla_chunk = reference_chunk.copy()
+                vla_offset = 0
+                if phase == "critical-only" and not vla_approved:
+                    time.sleep(max(0, period - (time.monotonic() - tick_start)))
+                    continue
+                vla_approved = False
             try:
                 if source == "human":
                     absolute = hardware.human_target()
@@ -330,18 +396,22 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     ]
                     actor_offset += 1
                 else:
-                    absolute = absolute_reference[0]
-                command = safe_command(absolute, state, args.max_arm_delta_deg)
+                    absolute = normalized_to_absolute(
+                        vla_chunk[vla_offset], state, q01, q99
+                    )
+                    vla_offset += 1
+                command = safe_command(
+                    absolute,
+                    state,
+                    args.max_arm_delta_deg,
+                    args.arm_low,
+                    args.arm_high,
+                )
+                hardware.send(command)
             except Exception:
-                logging.exception(
-                    "actor/human command failed; falling back to VLA reference"
-                )
-                source, command = (
-                    "vla",
-                    safe_command(absolute_reference[0], state, args.max_arm_delta_deg),
-                )
-
-            hardware.send(command)
+                logging.exception("%s command failed; command paused", source)
+                time.sleep(max(0, period - (time.monotonic() - tick_start)))
+                continue
             executed_normalized = absolute_to_normalized(
                 command[None], state, q01, q99
             )[0]
@@ -353,6 +423,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     "action": executed_normalized,
                     "proprio": proprio,
                     "source": source,
+                    "critical": critical,
                     "done": False,
                     "reward": 0.0,
                 }
@@ -373,10 +444,40 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
 def run(args, hardware_cls) -> None:
     """Run online RL using a robot-specific context-manager adapter."""
     settings = load_config(args.config)
+    train_phases = {"critical-only", "full-task"}
+    eval_phases = {"eval-base", "eval-rlt"}
+    if args.phase not in train_phases | eval_phases:
+        raise ValueError(
+            "--phase is required and must be one of critical-only, full-task, "
+            "eval-base or eval-rlt"
+        )
+    arm_joint_names = (
+        "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"
+    )
+    configured_limits = settings.runtime.get("arm_joint_limits_deg")
+    if configured_limits is None:
+        args.arm_low, args.arm_high = ARM_LOW, ARM_HIGH
+    else:
+        try:
+            limits_deg = np.asarray(
+                [configured_limits[name] for name in arm_joint_names], dtype=np.float32
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "runtime.arm_joint_limits_deg must define joint_1 through joint_6"
+            ) from exc
+        if (
+            limits_deg.shape != (6, 2)
+            or not np.isfinite(limits_deg).all()
+            or np.any(limits_deg[:, 0] > limits_deg[:, 1])
+        ):
+            raise ValueError(
+                "runtime.arm_joint_limits_deg must contain six finite [low, high] pairs"
+            )
+        args.arm_low, args.arm_high = np.deg2rad(limits_deg.T)
     for name, value in settings.hardware.items():
         if hasattr(args, name) and getattr(args, name) is None:
             setattr(args, name, value)
-    args.phase = args.phase or "auto"
     args.host = args.host or settings.runtime["feature_host"]
     args.port = args.port or int(settings.runtime["feature_port"])
     args.learner_device = args.learner_device or settings.runtime["learner_device"]
@@ -385,27 +486,34 @@ def run(args, hardware_cls) -> None:
     checkpoint = rollout_output / "learner_latest.pt"
     resume_checkpoint = args.resume or args.actor_checkpoint
     if resume_checkpoint is None:
-        for candidate in (checkpoint, args.output / "learner.pt"):
-            if candidate.exists():
-                resume_checkpoint = candidate
-                break
+        resume_checkpoint = checkpoint if checkpoint.exists() else None
     if resume_checkpoint is not None:
         resume_checkpoint = Path(resume_checkpoint)
         if not resume_checkpoint.exists():
             raise FileNotFoundError(f"resume checkpoint not found: {resume_checkpoint}")
+    if args.phase == "eval-rlt" and resume_checkpoint is None:
+        raise FileNotFoundError(
+            "eval-rlt requires checkpoints/online/rollout/learner_latest.pt or --resume"
+        )
     args.batch_size = int(args.batch_size or settings.online_rl["batch_size"])
     warmup_transitions = int(settings.online_rl["warmup_transitions"])
+    offline_warmup_updates = int(settings.online_rl["offline_warmup_updates"])
     args.max_arm_delta_deg = float(
         args.max_arm_delta_deg or settings.runtime["max_arm_delta_deg"]
     )
     args.control_hz = settings.control_hz
-    args.chunk_len = settings.action_horizon
+    args.vla_horizon = settings.action_horizon
+    args.chunk_len = settings.chunk_length
     args.prompt = settings.vla["prompt"]
     args.sigma = float(settings.online_rl["sigma"])
     args.critical_timeout_s = float(settings.runtime["critical_timeout_s"])
     args.full_timeout_s = float(settings.runtime["full_timeout_s"])
     if args.episodes is not None and args.episodes < 1:
         raise ValueError("--episodes must be positive")
+    if warmup_transitions < args.batch_size:
+        raise ValueError(
+            "online_rl.warmup_transitions must be at least online_rl.batch_size"
+        )
     args.output.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO)
     feature = WebsocketClientPolicy(args.host, args.port)
@@ -414,6 +522,11 @@ def run(args, hardware_cls) -> None:
         np.asarray(metadata["action_q01"], np.float32),
         np.asarray(metadata["action_q99"], np.float32),
     )
+    if int(metadata.get("action_horizon", args.vla_horizon)) != args.vla_horizon:
+        raise ValueError(
+            f"feature server H={metadata.get('action_horizon')} does not match "
+            f"configured H={args.vla_horizon}"
+        )
     learner_device = (
         "cuda"
         if args.learner_device == "auto" and torch.cuda.is_available()
@@ -431,7 +544,7 @@ def run(args, hardware_cls) -> None:
     proprio_dim = getattr(hardware_cls, "proprio_dim", None)
     if resume_checkpoint is not None:
         action_dim, proprio_dim = _learner_dimensions(
-            resume_checkpoint, z_dim, settings.action_horizon
+            resume_checkpoint, z_dim, args.chunk_len, args.vla_horizon
         )
     if action_dim != len(q01):
         raise ValueError(
@@ -444,7 +557,7 @@ def run(args, hardware_cls) -> None:
     actor = Actor(
         z_dim,
         proprio_dim,
-        settings.action_horizon,
+        args.chunk_len,
         action_dim,
         settings.mlp.actor_hidden_dim,
         settings.mlp.actor_num_layers,
@@ -452,14 +565,10 @@ def run(args, hardware_cls) -> None:
     critic = Critic(
         z_dim,
         proprio_dim,
-        settings.action_horizon,
+        args.chunk_len,
         action_dim,
         settings.mlp.critic_hidden_dim,
         settings.mlp.critic_num_layers,
-    )
-    replay = Replay(
-        args.output / "replay.sqlite",
-        capacity=int(settings.online_rl["replay_capacity"]),
     )
     learner = Learner(
         actor,
@@ -486,91 +595,183 @@ def run(args, hardware_cls) -> None:
         "config": str(settings.path),
         "task": settings.task,
         "control_hz": settings.control_hz,
-        "C": settings.action_horizon,
+        "H": args.vla_horizon,
+        "C": args.chunk_len,
         "z_dim": z_dim,
         "action_dim": action_dim,
         "proprio_dim": proprio_dim,
         "transition_horizon": settings.transition_horizon,
         "target_discount": settings.target_discount,
+        "bootstrap_complete": True,
     }
     lock = threading.Lock()
     outcomes = []
     wall_start = time.monotonic()
     episode_count = args.episodes
-    if episode_count is None and args.phase.startswith("eval"):
+    if episode_count is None and args.phase in eval_phases:
         episode_count = int(settings.online_rl["evaluation_episodes"])
     wandb_run = None
+    replay = None
+    warmup_replay = None
+    bootstrap = args.phase in train_phases and resume_checkpoint is None
+    replay_metadata = {
+        "H": args.vla_horizon,
+        "C": args.chunk_len,
+        "stride": settings.transition_stride_steps,
+        "kind": "online",
+    }
+    warmup_metadata = {**replay_metadata, "kind": "warmup"}
     try:
-        rollout_confirmed = args.phase not in {"auto", "warmup"}
-        if rollout_confirmed and not args.phase.startswith("eval") and settings.wandb_enabled:
+        if args.phase in train_phases and settings.wandb_enabled:
             wandb_run = _init_wandb(settings, args, learner, warmup_transitions)
         with (
             hardware_cls(args) as hardware,
-            TrainerThread(
-                learner,
-                replay,
-                args.batch_size,
-                checkpoint,
-                lock,
-                learner_metadata,
-                settings.online_rl["checkpoint_interval"],
-                wandb_run,
-                rollout_output,
-            ) as trainer,
         ):
-            episode = 0
             first_episode = True
-            while episode_count is None or episode < episode_count:
-                phase = args.phase
-                if (
-                    phase == "auto"
-                    and not rollout_confirmed
-                    and len(replay) >= warmup_transitions
-                ):
-                    if not _confirm_rollout():
+            if bootstrap:
+                online_path = args.output / "replay.sqlite"
+                if online_path.exists():
+                    existing = Replay(
+                        online_path,
+                        capacity=int(settings.online_rl["replay_capacity"]),
+                        metadata=replay_metadata,
+                    )
+                    if len(existing):
+                        existing.close()
+                        raise ValueError(
+                            f"{online_path} is not empty without a learner checkpoint; "
+                            "archive it before starting bootstrap"
+                        )
+                    existing.close()
+                warmup_replay = Replay(
+                    args.output / "warmup_replay.sqlite",
+                    capacity=int(settings.online_rl["replay_capacity"]),
+                    metadata=warmup_metadata,
+                )
+                warmup_episode = 0
+                while len(warmup_replay) < warmup_transitions:
+                    warmup_episode += 1
+                    _prepare_episode(hardware, "warmup", warmup_episode, first_episode)
+                    first_episode = False
+                    ticks, success, elapsed, aborted = run_episode(
+                        args, "warmup", hardware, feature, learner, lock, q01, q99
+                    )
+                    if aborted:
                         return
-                    rollout_confirmed = True
-                    if settings.wandb_enabled:
-                        wandb_run = _init_wandb(
-                            settings, args, learner, warmup_transitions
-                        )
-                        trainer.set_wandb_run(wandb_run)
-                args.auto_warmup = phase == "auto" and len(replay) < warmup_transitions
-                _prepare_episode(hardware, phase, episode + 1, first_episode)
-                first_episode = False
-                ticks, success, elapsed, aborted = run_episode(
-                    args, phase, hardware, feature, learner, lock, q01, q99
-                )
-                if aborted:
-                    episode += 1
-                    continue
-                rows = build_transitions(
-                    ticks,
-                    horizon=settings.transition_horizon,
-                    stride=settings.transition_stride_steps,
-                )
-                if not phase.startswith("eval"):
+                    rows = build_transitions(
+                        ticks,
+                        horizon=settings.transition_horizon,
+                        stride=settings.transition_stride_steps,
+                    )
                     for row in rows:
-                        replay.add(row)
-                    if rollout_confirmed:
-                        trainer.notify(len(rows))
-                    else:
-                        print(
-                            f"Warmup transitions: {len(replay)}/{warmup_transitions}"
+                        warmup_replay.add(row)
+                    record = {
+                        "phase": "warmup",
+                        "success": success,
+                        "seconds": elapsed,
+                        "transitions": len(rows),
+                        "replay_size": len(warmup_replay),
+                        "robot_hours": (time.monotonic() - wall_start) / 3600,
+                    }
+                    outcomes.append(record)
+                    if wandb_run is not None:
+                        wandb_run.log(
+                            {
+                                "bootstrap/transition_step": len(warmup_replay),
+                                "bootstrap/replay_size": len(warmup_replay),
+                                "episode": len(outcomes),
+                                "episode/success": int(success),
+                                "episode/seconds": elapsed,
+                                "episode/transitions": len(rows),
+                            }
                         )
-                record = {
-                    "phase": phase,
-                    "task": args.eval_task if phase.startswith("eval") else phase,
-                    "success": success,
-                    "seconds": elapsed,
-                    "transitions": len(rows),
-                    "robot_hours": (time.monotonic() - wall_start) / 3600,
-                }
-                outcomes.append(record)
-                if wandb_run is not None:
-                    wandb_run.log(
-                        {
-                            "episode": episode + 1,
+                    with (args.output / "episodes.jsonl").open("a") as stream:
+                        stream.write(json.dumps(record) + "\n")
+                    print(
+                        f"Warmup transitions: {len(warmup_replay)}/{warmup_transitions}"
+                    )
+
+                _offline_warmup(
+                    learner,
+                    warmup_replay,
+                    offline_warmup_updates,
+                    args.batch_size,
+                    wandb_run,
+                    settings.log_interval,
+                )
+                rollout_output.mkdir(parents=True, exist_ok=True)
+                learner.save(checkpoint, learner_metadata)
+                warmup_replay.close()
+                warmup_replay = None
+
+            if args.phase in train_phases:
+                replay = Replay(
+                    args.output / "replay.sqlite",
+                    capacity=int(settings.online_rl["replay_capacity"]),
+                    metadata=replay_metadata,
+                )
+            if args.phase in train_phases:
+                trainer_context = TrainerThread(
+                    learner,
+                    replay,
+                    args.batch_size,
+                    checkpoint,
+                    lock,
+                    learner_metadata,
+                    settings.online_rl["checkpoint_interval"],
+                    wandb_run,
+                    rollout_output,
+                )
+            else:
+                trainer_context = contextlib.nullcontext(None)
+            with trainer_context as trainer:
+                episode = 0
+                while episode_count is None or episode < episode_count:
+                    episode += 1
+                    _prepare_episode(hardware, args.phase, episode, first_episode)
+                    first_episode = False
+                    ticks, success, elapsed, aborted = run_episode(
+                        args, args.phase, hardware, feature, learner, lock, q01, q99
+                    )
+                    if aborted:
+                        continue
+                    if args.phase in train_phases:
+                        critical_start = next(
+                            (
+                                index
+                                for index, tick in enumerate(ticks)
+                                if tick.get("critical")
+                            ),
+                            None,
+                        )
+                        target_ticks = (
+                            ticks[critical_start:]
+                            if critical_start is not None
+                            else []
+                        )
+                        rows = build_transitions(
+                            target_ticks,
+                            horizon=settings.transition_horizon,
+                            stride=settings.transition_stride_steps,
+                        )
+                        for row in rows:
+                            replay.add(row)
+                        if trainer is not None:
+                            trainer.notify(len(rows))
+                    else:
+                        rows = []
+                    record = {
+                        "phase": args.phase,
+                        "success": success,
+                        "seconds": elapsed,
+                        "transitions": len(rows),
+                        "replay_size": len(replay) if replay is not None else 0,
+                        "robot_hours": (time.monotonic() - wall_start) / 3600,
+                    }
+                    outcomes.append(record)
+                    if wandb_run is not None:
+                        payload = {
+                            "episode": len(outcomes),
                             "episode/success": int(success),
                             "episode/success_rate": sum(
                                 item["success"] for item in outcomes
@@ -578,18 +779,20 @@ def run(args, hardware_cls) -> None:
                             / len(outcomes),
                             "episode/seconds": elapsed,
                             "episode/transitions": len(rows),
-                            "episode/replay_size": len(replay),
+                            "episode/replay_size": len(replay) if replay is not None else 0,
                         }
-                    )
-                with (args.output / "episodes.jsonl").open("a") as stream:
-                    stream.write(json.dumps(record) + "\n")
-                episode += 1
+                        wandb_run.log(payload)
+                    with (args.output / "episodes.jsonl").open("a") as stream:
+                        stream.write(json.dumps(record) + "\n")
     finally:
         if wandb_run is not None:
             wandb_run.finish()
         with contextlib.suppress(Exception):
             feature._ws.close()
-        replay.close()
+        if replay is not None:
+            replay.close()
+        if warmup_replay is not None:
+            warmup_replay.close()
     successes = sum(item["success"] for item in outcomes)
     minutes = sum(item["seconds"] for item in outcomes) / 60
     print(

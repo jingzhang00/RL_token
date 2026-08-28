@@ -11,8 +11,8 @@ vla:
   prompt: Pick up the doll and place it on the plate
   # Flow-matching inference steps, default=10 in pi settings
   inference_steps: 10
-  # VLA action chunk; RL token and online RL use the same C.
-  action_horizon: 20  
+  # VLA proposal horizon H. Online RL executes shorter C-step chunks.
+  action_horizon: 20
   model:
     pi05: true
     discrete_state_input: true
@@ -58,6 +58,8 @@ online_rl:
   critic_updates_per_transition: 5
   batch_size: 256
   warmup_transitions: 1000
+  offline_warmup_updates: 10000
+  chunk_length: 10
   replay_capacity: 1000000
   output: checkpoints/online
   checkpoint_interval: 10000

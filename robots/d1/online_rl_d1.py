@@ -11,7 +11,6 @@ import threading
 
 import numpy as np
 
-from rlt.actions import ARM_HIGH, ARM_LOW
 from rlt.online_runner import run
 
 
@@ -176,7 +175,9 @@ class D1Hardware:
             np.float32,
         )
         arm = np.clip(
-            self.takeover_arm + np.deg2rad(angles - self.exo_zero), ARM_LOW, ARM_HIGH
+            self.takeover_arm + np.deg2rad(angles - self.exo_zero),
+            self.args.arm_low,
+            self.args.arm_high,
         )
         hand = np.clip(
             self.takeover_hand
@@ -260,10 +261,14 @@ def main() -> None:
     parser.add_argument("--config", type=Path)
     parser.add_argument(
         "--phase",
-        choices=("auto", "warmup", "critical", "full", "eval-base", "eval-rlt"),
-        default=None,
+        choices=("critical-only", "full-task", "eval-base", "eval-rlt"),
+        required=True,
     )
-    parser.add_argument("--eval-task", choices=("critical", "full"), default="critical")
+    parser.add_argument(
+        "--eval-task",
+        choices=("critical-only", "full-task"),
+        default="critical-only",
+    )
     parser.add_argument("--episodes", type=int, help="Limit the number of episodes.")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)

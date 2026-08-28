@@ -27,7 +27,13 @@ def absolute_to_normalized(absolute, state, q01, q99) -> np.ndarray:
     ).astype(np.float32)
 
 
-def safe_command(command, current, max_arm_delta_deg: float = 12.0) -> np.ndarray:
+def safe_command(
+    command,
+    current,
+    max_arm_delta_deg: float = 12.0,
+    arm_low: np.ndarray = ARM_LOW,
+    arm_high: np.ndarray = ARM_HIGH,
+) -> np.ndarray:
     command = np.asarray(command, dtype=np.float32)
     current = np.asarray(current, dtype=np.float32)
     if (
@@ -38,5 +44,5 @@ def safe_command(command, current, max_arm_delta_deg: float = 12.0) -> np.ndarra
         raise ValueError("D1 command/current must be finite 12-D vectors")
     max_delta = np.deg2rad(float(max_arm_delta_deg))
     arm = np.clip(command[:6], current[:6] - max_delta, current[:6] + max_delta)
-    arm = np.clip(arm, ARM_LOW, ARM_HIGH)
+    arm = np.clip(arm, arm_low, arm_high)
     return np.concatenate([arm, np.clip(command[6:], 0, 1)]).astype(np.float32)

@@ -56,6 +56,7 @@ class RLTConfig:
     log_interval: int
     control_hz: float
     action_horizon: int
+    chunk_length: int
     transition_stride_steps: int
     vla: dict[str, Any]
     vla_finetune: dict[str, Any]
@@ -67,7 +68,7 @@ class RLTConfig:
 
     @property
     def transition_horizon(self) -> int:
-        return self.action_horizon
+        return self.chunk_length
 
     @property
     def vla_checkpoint(self) -> Path:
@@ -128,9 +129,15 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
     control_hz = float(runtime.get("control_hz", 10))
     vla = dict(data.get("vla", {}))
     action_horizon = int(vla.get("action_horizon", 10))
+    online_rl = dict(data.get("online_rl", {}))
+    chunk_length = int(online_rl.get("chunk_length", action_horizon))
     stride = int(runtime.get("transition_stride_steps", 2))
-    if control_hz <= 0 or action_horizon < 1:
-        raise ValueError("control_hz and action_horizon must be positive")
+    if control_hz <= 0 or action_horizon < 1 or chunk_length < 1:
+        raise ValueError("control_hz, action_horizon and chunk_length must be positive")
+    if chunk_length >= action_horizon:
+        raise ValueError(
+            f"online chunk_length C={chunk_length} must be smaller than VLA horizon H={action_horizon}"
+        )
     if stride < 1:
         raise ValueError("transition_stride_steps must be positive")
 
@@ -156,11 +163,17 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
 
     vla_finetune = dict(vla.get("finetune", {}))
     rl_token = dict(data.get("rl_token", {}))
-    online_rl = dict(data.get("online_rl", {}))
     if int(data.get("log_interval", 100)) < 1:
         raise ValueError("log_interval must be positive")
-    if int(online_rl.get("warmup_transitions", 256)) < 1:
+    warmup_transitions = int(online_rl.get("warmup_transitions", 256))
+    batch_size = int(online_rl.get("batch_size", 256))
+    offline_warmup_updates = int(online_rl.get("offline_warmup_updates", 5000))
+    if warmup_transitions < 1 or batch_size < 1 or offline_warmup_updates < 1:
         raise ValueError("warmup_transitions must be positive")
+    if warmup_transitions < batch_size:
+        raise ValueError(
+            "online_rl.warmup_transitions must be at least online_rl.batch_size"
+        )
     return RLTConfig(
         path=config_path,
         robot_path=robot_path,
@@ -170,6 +183,7 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
         log_interval=int(data.get("log_interval", 100)),
         control_hz=control_hz,
         action_horizon=action_horizon,
+        chunk_length=chunk_length,
         transition_stride_steps=stride,
         vla=vla,
         vla_finetune=vla_finetune,

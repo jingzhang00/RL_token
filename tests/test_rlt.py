@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 from rlt.models import Actor, Critic, RLToken, actor_loss, reference_dropout
@@ -127,13 +128,15 @@ def test_eq5_uses_squared_l2_norm_and_c_step_rewards():
 def test_frequency_and_task_mlp_settings_are_derived_from_yaml():
     config = load_config()
     assert (config.control_hz, config.action_horizon) == (10, 20)
-    assert config.transition_horizon == config.action_horizon
-    assert config.target_discount == 0.99**config.action_horizon
+    assert config.chunk_length == 10
+    assert config.transition_horizon == config.chunk_length
+    assert config.target_discount == 0.99**config.chunk_length
     assert "phases" not in config.online_rl and "max_hours" not in config.runtime
     assert "action_dim" not in config.online_rl and "proprio_dim" not in config.online_rl
     assert "action_dim" not in config.vla and config.action_dim == 12
-    assert (config.wandb_enabled, config.project_name, config.log_interval) == (True, "openpi", 100)
-    assert config.online_rl["warmup_transitions"] == 256
+    assert (config.wandb_enabled, config.project_name, config.log_interval) == (True, "openpi", 10)
+    assert config.online_rl["warmup_transitions"] == 1000
+    assert config.online_rl["offline_warmup_updates"] == 5000
     assert load_config(task="screw_installation").mlp.actor_hidden_dim == 512
 
 
@@ -151,7 +154,55 @@ def test_update_ratio_replay_capacity_and_restore(tmp_path):
     restored = Learner(Actor(8, 4, 2, 3), Critic(8, 4, 2, 3), horizon=2)
     assert restored.load(checkpoint) == {"beta": 1}
     assert (restored.critic_steps, restored.actor_steps) == (4, 2)
+    assert (restored.online_critic_steps, restored.online_actor_steps) == (0, 0)
     replay.close()
+
+
+def test_replay_metadata_rejects_incompatible_data(tmp_path):
+    metadata = {"H": 20, "C": 10, "stride": 2, "kind": "online"}
+    replay = Replay(tmp_path / "replay.sqlite", capacity=3, metadata=metadata)
+    replay.add(_transition())
+    replay.close()
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        Replay(
+            tmp_path / "replay.sqlite",
+            capacity=3,
+            metadata={"H": 20, "C": 20, "stride": 2, "kind": "online"},
+        )
+
+
+def test_transitions_do_not_cross_source_segments():
+    ticks = []
+    for source in ("actor", "human"):
+        for index in range(4):
+            value = len(ticks)
+            ticks.append(
+                {
+                    "z": np.full(8, value),
+                    "reference": np.full(3, value),
+                    "action": np.full(3, 10 + value),
+                    "reference_chunk": np.full((4, 3), value),
+                    "proprio": np.full(4, value),
+                    "source": source,
+                    "done": False,
+                    "reward": 0.0,
+                }
+            )
+    rows = build_transitions(ticks, horizon=3, stride=1)
+    assert [row.source for row in rows] == ["actor", "actor", "human", "human"]
+    assert all(not row.done for row in rows)
+    assert np.array_equal(rows[2].reference, rows[2].action)
+
+
+def test_online_update_counters_are_separate():
+    torch.manual_seed(3)
+    learner = Learner(Actor(8, 4, 2, 3), Critic(8, 4, 2, 3), horizon=2)
+    learner.update([_transition()], online=True)
+    learner.update([_transition()], online=True)
+    assert learner.critic_steps == 2
+    assert learner.online_critic_steps == 2
+    assert learner.actor_steps == 1
+    assert learner.online_actor_steps == 1
 
 
 def test_stride_terminal_human_reference_and_proprio():
