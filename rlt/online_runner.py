@@ -22,7 +22,6 @@ from rlt.actions import (
     ARM_HIGH,
     ARM_LOW,
     absolute_to_normalized,
-    normalized_to_absolute,
     safe_command,
 )
 from rlt.models import Actor, Critic
@@ -274,8 +273,10 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     ticks = []
     previous = None
     vla_chunk = None
+    vla_absolute_chunk = None
     vla_offset = args.chunk_len
     actor_chunk = None
+    actor_absolute_chunk = None
     actor_offset = args.chunk_len
     vla_approved = False
     handoff_requested = False
@@ -316,6 +317,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     handoff_requested = True
                 if critical:
                     actor_chunk = None
+                    actor_absolute_chunk = None
                     actor_offset = args.chunk_len
             if key == " " and not warmup:
                 human = not human
@@ -324,6 +326,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         previous if previous is not None else hardware.read()[1]
                     )
                 actor_chunk = None
+                actor_absolute_chunk = None
                 actor_offset = args.chunk_len
                 vla_chunk = None
                 vla_offset = args.chunk_len
@@ -345,9 +348,17 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 reference_chunk = np.asarray(features["reference"], np.float32)[
                     : args.vla_horizon
                 ]
+                absolute_reference = np.asarray(features["absolute"], np.float32)[
+                    : args.vla_horizon
+                ]
                 if reference_chunk.shape[0] < args.vla_horizon:
                     raise ValueError(
                         f"VLA reference has {reference_chunk.shape[0]} steps, "
+                        f"need H={args.vla_horizon}"
+                    )
+                if absolute_reference.shape[0] < args.vla_horizon:
+                    raise ValueError(
+                        f"VLA absolute actions have {absolute_reference.shape[0]} steps, "
                         f"need H={args.vla_horizon}"
                     )
             except Exception:
@@ -364,6 +375,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 critical = True
                 handoff_requested = False
                 actor_chunk = None
+                actor_absolute_chunk = None
                 actor_offset = args.chunk_len
 
             source = "human" if human else "actor" if critical and actor_phase else "vla"
@@ -372,6 +384,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 and (vla_chunk is None or vla_offset >= args.chunk_len)
             ):
                 vla_chunk = reference_chunk.copy()
+                vla_absolute_chunk = absolute_reference.copy()
                 vla_offset = 0
                 if phase == "critical-only" and not vla_approved:
                     time.sleep(max(0, period - (time.monotonic() - tick_start)))
@@ -388,18 +401,29 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                             rt = torch.from_numpy(reference_chunk[: args.chunk_len][None]).to(
                                 learner.device
                             )
-                            actor_chunk, _ = learner.actor.sample(
+                            sampled_actor_chunk, _ = learner.actor.sample(
                                 zt, pt, rt, args.sigma
                             )
-                            actor_chunk = actor_chunk[0].cpu().numpy()
+                            sampled_actor_chunk = sampled_actor_chunk[0].cpu().numpy()
+                            sampled_actor_absolute_chunk = np.asarray(
+                                feature.infer(
+                                    {
+                                        "convert_actions": sampled_actor_chunk,
+                                        "normalized_state": features["normalized_state"],
+                                    }
+                                )["absolute"],
+                                dtype=np.float32,
+                            )
+                            if sampled_actor_absolute_chunk.shape != sampled_actor_chunk.shape:
+                                raise ValueError(
+                                    "OpenPI actor conversion returned an incompatible action shape"
+                                )
+                            actor_chunk = sampled_actor_chunk
+                            actor_absolute_chunk = sampled_actor_absolute_chunk
                             actor_offset = 0
-                    absolute = normalized_to_absolute(actor_chunk, state, q01, q99)[
-                        actor_offset
-                    ]
+                    absolute = actor_absolute_chunk[actor_offset]
                 else:
-                    absolute = normalized_to_absolute(
-                        vla_chunk[vla_offset], state, q01, q99
-                    )
+                    absolute = vla_absolute_chunk[vla_offset]
                 command = safe_command(
                     absolute,
                     state,

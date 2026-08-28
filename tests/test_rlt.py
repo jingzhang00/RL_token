@@ -137,7 +137,7 @@ def test_frequency_and_task_mlp_settings_are_derived_from_yaml():
     assert "action_dim" not in config.vla and config.action_dim == 12
     assert (config.wandb_enabled, config.project_name, config.log_interval) == (True, "openpi", 10)
     assert config.online_rl["warmup_transitions"] == 1000
-    assert config.online_rl["offline_warmup_updates"] == 5000
+    assert config.online_rl["offline_warmup_updates"] == 10000
     assert load_config(task="screw_installation").mlp.actor_hidden_dim == 512
 
 
@@ -240,11 +240,17 @@ def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch):
 
     class FakeFeature:
         def infer(self, _):
+            if "convert_actions" in _:
+                conversions.append(np.asarray(_["convert_actions"], np.float32))
+                return {"absolute": np.asarray(_["convert_actions"], np.float32)}
             return {
                 "z": np.zeros(8, np.float32),
                 "reference": np.zeros((3, 12), np.float32),
+                "absolute": np.zeros((3, 12), np.float32),
+                "normalized_state": np.zeros(12, np.float32),
             }
 
+    conversions = []
     args = SimpleNamespace(
         chunk_len=2,
         vla_horizon=3,
@@ -273,6 +279,7 @@ def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch):
     )
     assert success and not aborted
     assert [tick["source"] for tick in ticks] == ["vla", "vla", "actor", "actor"]
+    assert conversions and conversions[0].shape == (2, 12)
 
     keys = ["c", " ", None, None, "\n"]
     ticks, success, _, aborted = run_episode(

@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from rlt.models import RLToken
@@ -30,6 +31,13 @@ class FeaturePolicy:
 
     @torch.inference_mode()
     def infer(self, request: dict) -> dict:
+        if "convert_actions" in request:
+            return {
+                "absolute": self.adapter.absolute_actions(
+                    np.asarray(request["convert_actions"], dtype=np.float32),
+                    np.asarray(request["normalized_state"], dtype=np.float32),
+                )
+            }
         observations = request.get("observations", request)
         result = self.adapter.infer(observations)
         single = isinstance(observations, dict)
