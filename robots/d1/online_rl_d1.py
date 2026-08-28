@@ -68,6 +68,9 @@ class D1Hardware:
         self.initial_state = _load_initial_state(args.initial_state_file)
         self.exo = self.glove = None
         self.exo_zero = self.takeover_arm = self.glove_zero = self.takeover_hand = None
+        self.human_origin_exo = self.human_origin_glove = self.human_origin_robot = None
+        self._human_sync_count = 0
+        self._human_sync_target = None
 
     def __enter__(self):
         from beingbeyond_d1_edu_sdk.urdf_path import get_default_urdf_path
@@ -153,15 +156,77 @@ class D1Hardware:
         state = _read_state(self.robot.head_arm, self.robot.hand)
         return np.ascontiguousarray(np.asarray(bgr, dtype=np.uint8)[:, :, ::-1]), state
 
-    def rebase_human(self, state):
+    def _read_human_pose(self):
         if self.exo is None or self.glove is None:
             raise RuntimeError("human takeover requires --human")
         frame = self.exo.read_frame()
         if not frame.ok:
-            raise RuntimeError("cannot rebase: invalid exoskeleton frame")
-        self.exo_zero = np.asarray(frame.angles_deg, np.float32)
-        self.glove_zero = np.asarray(self.glove.get_norm_values(), np.float32)
+            raise RuntimeError("invalid exoskeleton frame")
+        angles = np.asarray(frame.angles_deg, np.float32)
+        glove = np.asarray(self.glove.get_norm_values(), np.float32)
+        if (
+            angles.shape != (6,)
+            or glove.shape != (6,)
+            or not np.isfinite(angles).all()
+            or not np.isfinite(glove).all()
+        ):
+            raise RuntimeError("invalid human control pose")
+        return angles, glove
+
+    def _set_human_rebase(self, state, angles, glove):
+        self.exo_zero = angles.copy()
+        self.glove_zero = glove.copy()
         self.takeover_arm, self.takeover_hand = state[:6].copy(), state[6:].copy()
+
+    def start_human_episode(self, state):
+        if self.exo is None or self.glove is None:
+            return
+        angles, glove = self._read_human_pose()
+        self.human_origin_exo = angles.copy()
+        self.human_origin_glove = glove.copy()
+        self.human_origin_robot = state.copy()
+        self._set_human_rebase(state, angles, glove)
+
+    def rebase_human(self, state):
+        angles, glove = self._read_human_pose()
+        self._set_human_rebase(state, angles, glove)
+
+    def begin_human_sync(self):
+        self._human_sync_count = 0
+
+    def human_sync_ready(self, state):
+        if self.human_origin_robot is None:
+            raise RuntimeError("human episode origin is not initialized")
+        try:
+            angles, glove = self._read_human_pose()
+        except Exception:
+            self._human_sync_count = 0
+            raise
+        target = np.concatenate(
+            [
+                self.human_origin_robot[:6]
+                + np.deg2rad(angles - self.human_origin_exo),
+                self.human_origin_robot[6:] + glove - self.human_origin_glove,
+            ]
+        )
+        self._human_sync_target = target.copy()
+        arm_threshold = np.deg2rad(
+            float(getattr(self.args, "human_sync_arm_threshold_deg", 8.0))
+        )
+        hand_threshold = float(
+            getattr(self.args, "human_sync_hand_threshold", 0.1)
+        )
+        ready = (
+            np.all(np.abs(target[:6] - state[:6]) <= arm_threshold)
+            and np.all(np.abs(target[6:] - state[6:]) <= hand_threshold)
+        )
+        self._human_sync_count = self._human_sync_count + 1 if ready else 0
+        return self._human_sync_count >= int(
+            getattr(self.args, "human_sync_frames", 3)
+        )
+
+    def human_sync_target(self):
+        return None if self._human_sync_target is None else self._human_sync_target.copy()
 
     def human_target(self):
         frame = self.exo.read_frame()
@@ -174,15 +239,23 @@ class D1Hardware:
             ],
             np.float32,
         )
+        arm_delta = np.deg2rad(angles - self.exo_zero)
+        arm_deadband = np.deg2rad(
+            float(getattr(self.args, "human_deadband_arm_deg", 1.0))
+        )
+        arm_delta[np.abs(arm_delta) < arm_deadband] = 0
         arm = np.clip(
-            self.takeover_arm + np.deg2rad(angles - self.exo_zero),
+            self.takeover_arm + arm_delta,
             self.args.arm_low,
             self.args.arm_high,
         )
+        hand_delta = (
+            np.asarray(self.glove.get_norm_values(), np.float32) - self.glove_zero
+        )
+        hand_deadband = float(getattr(self.args, "human_deadband_hand", 0.02))
+        hand_delta[np.abs(hand_delta) < hand_deadband] = 0
         hand = np.clip(
-            self.takeover_hand
-            + np.asarray(self.glove.get_norm_values())
-            - self.glove_zero,
+            self.takeover_hand + hand_delta,
             0,
             1,
         )

@@ -151,6 +151,10 @@ def _read_episode_label() -> bool | None:
         print("Please enter s, f, or q.")
 
 
+def _format_pose(values) -> str:
+    return "[" + " ".join(f"{float(value):.1f}" for value in values) + "]"
+
+
 def _confirm_offline_warmup() -> bool:
     while True:
         answer = input(
@@ -302,6 +306,9 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     actor_phase = phase in {"critical-only", "full-task", "eval-rlt"}
     critical = False
     human = phase == "critical-only"
+    human_syncing = False
+    human_hold_state = None
+    human_sync_next_report = 0.0
     aborted = False
     ticks = []
     previous = None
@@ -318,21 +325,27 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
         or (phase.startswith("eval") and args.eval_task == "critical-only")
         else args.full_timeout_s
     )
-    deadline = None if phase == "critical-only" else started + timeout
+    deadline = (
+        None if phase in {"critical-only", "full-task"} else started + timeout
+    )
+    human_timeout_remaining = None
     period = 1.0 / args.control_hz
-    if phase == "critical-only":
+    start_human_episode = getattr(hardware, "start_human_episode", None)
+    if callable(start_human_episode):
+        start_human_episode(hardware.read()[1])
+    elif phase == "critical-only":
         hardware.rebase_human(hardware.read()[1])
     if warmup:
-        controls = "Enter=end episode, s/f=label after ending, q=abort"
+        controls = "Enter=end episode, s/f=success/failure, q=abort"
     elif phase == "critical-only":
         controls = (
-            "Enter=end episode, c=RL critical phase, h=human, "
-            "s/f=label after ending, q=abort"
+            "Enter=end episode, c=critical phase, h=human, "
+            "s/f=success/failure, q=abort"
         )
     else:
         controls = (
             "Enter=end episode, c=critical phase, h=human, "
-            "s/f=label after ending, q=abort"
+            "s/f=success/failure, q=abort"
         )
     print(f"\n{phase}: {controls} (timeout {timeout}s)")
     with Keys() as keys:
@@ -357,8 +370,11 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 if not (phase == "critical-only" and critical):
                     critical = not critical
                     human = False
-                    if phase == "critical-only":
-                        deadline = time.monotonic() + timeout if critical else None
+                    human_syncing = False
+                    human_hold_state = None
+                    human_sync_next_report = 0.0
+                    human_timeout_remaining = None
+                    deadline = time.monotonic() + timeout if critical else None
                     actor_chunk = None
                     actor_absolute_chunk = None
                     actor_offset = args.chunk_len
@@ -370,27 +386,102 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 if human:
                     if phase == "critical-only" and critical:
                         human = False
+                        human_syncing = False
+                        human_hold_state = None
+                        human_sync_next_report = 0.0
                     elif phase == "critical-only":
                         critical = True
                         deadline = time.monotonic() + timeout
                     elif phase != "critical-only":
                         human = False
+                        human_syncing = False
+                        human_hold_state = None
+                        human_sync_next_report = 0.0
                         critical = False
+                        human_timeout_remaining = None
+                        deadline = None
                 else:
                     human = True
                     if phase in {"critical-only", "full-task"} and not critical:
                         critical = True
-                        if phase == "critical-only":
+                    if callable(getattr(hardware, "human_sync_ready", None)):
+                        human_hold_state = hardware.read()[1].copy()
+                        if deadline is not None:
+                            human_timeout_remaining = max(
+                                0.0, deadline - time.monotonic()
+                            )
+                            deadline = None
+                        human_syncing = True
+                        human_sync_next_report = 0.0
+                        begin_human_sync = getattr(hardware, "begin_human_sync", None)
+                        if callable(begin_human_sync):
+                            begin_human_sync()
+                        print("Human takeover syncing; match the robot pose.")
+                    else:
+                        hardware.rebase_human(
+                            previous if previous is not None else hardware.read()[1]
+                        )
+                        if critical and deadline is None:
                             deadline = time.monotonic() + timeout
-                    hardware.rebase_human(
-                        previous if previous is not None else hardware.read()[1]
-                    )
+                        print("Human control active.")
                 actor_chunk = None
                 actor_absolute_chunk = None
                 actor_offset = args.chunk_len
                 vla_chunk = None
                 vla_absolute_chunk = None
                 vla_offset = args.chunk_len
+
+            if human_syncing:
+                image, state = hardware.read()
+                previous = state.copy()
+                try:
+                    if hardware.human_sync_ready(state):
+                        sync_ready = True
+                    else:
+                        sync_ready = False
+                    now = time.monotonic()
+                    if now >= human_sync_next_report:
+                        target_reader = getattr(hardware, "human_sync_target", None)
+                        target = target_reader() if callable(target_reader) else None
+                        if target is not None:
+                            target = np.asarray(target, dtype=np.float32)
+                            if target.shape == state.shape:
+                                print(
+                                    "=========    Human syncing:   =========\n "
+                                    f"arm={_format_pose(np.rad2deg(target[:6]))}\n "
+                                    f"robot={_format_pose(np.rad2deg(state[:6]))}\n "
+                                    f"glove={_format_pose(target[6:])}\n "
+                                    f"hand={_format_pose(state[6:])}\n"
+                                )
+                        human_sync_next_report = now + 2.0
+                    if sync_ready:
+                        hardware.rebase_human(state)
+                        human_syncing = False
+                        human_hold_state = None
+                        human_sync_next_report = 0.0
+                        if critical and deadline is None:
+                            deadline = time.monotonic() + (
+                                human_timeout_remaining
+                                if human_timeout_remaining is not None
+                                else timeout
+                            )
+                        human_timeout_remaining = None
+                        print("========Human control activate.========")
+                    else:
+                        hardware.send(
+                            human_hold_state if human_hold_state is not None else state
+                        )
+                        time.sleep(max(0, period - (time.monotonic() - tick_start)))
+                        continue
+                except Exception:
+                    logging.exception("human sync failed; command paused")
+                    if human_hold_state is not None:
+                        try:
+                            hardware.send(human_hold_state)
+                        except Exception:
+                            logging.exception("human hold command failed")
+                    time.sleep(max(0, period - (time.monotonic() - tick_start)))
+                    continue
 
             if phase == "critical-only" and not critical:
                 image, state = hardware.read()
@@ -606,6 +697,34 @@ def run(args, hardware_cls) -> None:
     args.sigma = float(settings.online_rl["sigma"])
     args.critical_timeout_s = float(settings.runtime["critical_timeout_s"])
     args.full_timeout_s = float(settings.runtime["full_timeout_s"])
+    args.human_sync_arm_threshold_deg = float(
+        settings.runtime.get("human_sync_arm_threshold_deg", 8.0)
+    )
+    args.human_sync_hand_threshold = float(
+        settings.runtime.get("human_sync_hand_threshold", 0.1)
+    )
+    args.human_sync_frames = int(settings.runtime.get("human_sync_frames", 3))
+    args.human_deadband_arm_deg = float(
+        settings.runtime.get("human_deadband_arm_deg", 1.0)
+    )
+    args.human_deadband_hand = float(
+        settings.runtime.get("human_deadband_hand", 0.02)
+    )
+    if (
+        not np.isfinite(args.human_sync_arm_threshold_deg)
+        or args.human_sync_arm_threshold_deg <= 0
+        or not np.isfinite(args.human_sync_hand_threshold)
+        or args.human_sync_hand_threshold <= 0
+        or args.human_sync_frames < 1
+        or not np.isfinite(args.human_deadband_arm_deg)
+        or args.human_deadband_arm_deg < 0
+        or not np.isfinite(args.human_deadband_hand)
+        or args.human_deadband_hand < 0
+    ):
+        raise ValueError(
+            "human sync thresholds must be finite and positive, frames must be positive, "
+            "and human deadbands must be finite and non-negative"
+        )
     if args.episodes is not None and args.episodes < 1:
         raise ValueError("--episodes must be positive")
     if warmup_transitions < args.batch_size:

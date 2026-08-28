@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
-from types import SimpleNamespace
 
 from rlt.models import Actor, Critic, RLToken, actor_loss, reference_dropout
 from rlt.online_runner import (
@@ -16,6 +18,7 @@ from rlt.rl_core import Learner, Replay, Transition, build_transitions, make_pro
 from rlt.actions import absolute_to_normalized, normalized_to_absolute, safe_command
 from rlt.serve_features import FeaturePolicy
 from rlt.settings import load_config
+from robots.d1.online_rl_d1 import D1Hardware
 
 
 def test_episode_label_is_collected_after_episode_ends(monkeypatch):
@@ -415,6 +418,133 @@ def test_critical_only_starts_with_teleop_and_c_starts_rl(monkeypatch, capsys):
     assert success and not aborted
     assert [tick["source"] for tick in ticks] == ["human", "human", "actor", "actor"]
     assert all(tick["critical"] for tick in ticks)
+
+
+def test_human_sync_rebases_and_prompts_without_confirmation(monkeypatch, capsys):
+    class FakeKeys:
+        def __enter__(self):
+            return self
+
+        def read(self):
+            return keys.pop(0)
+
+        def __exit__(self, *_):
+            return None
+
+    class FakeHardware:
+        def __init__(self):
+            self.ready = iter([False, False, True])
+            self.rebases = 0
+            self.begins = 0
+            self.sent = []
+            self.reads = 0
+            self.sync_target = np.full(12, 2, np.float32)
+
+        def read(self):
+            self.reads += 1
+            return np.zeros((8, 8, 3), np.uint8), np.full(
+                12, self.reads, np.float32
+            )
+
+        def begin_human_sync(self):
+            self.begins += 1
+
+        def human_sync_ready(self, _):
+            ready = next(self.ready)
+            if not ready:
+                time.sleep(0.02)
+            return ready
+
+        def human_sync_target(self):
+            return self.sync_target
+
+        def rebase_human(self, _):
+            self.rebases += 1
+
+        def human_target(self):
+            return np.zeros(12, np.float32)
+
+        def send(self, command):
+            self.sent.append(command)
+
+    class FakeFeature:
+        def infer(self, request):
+            if "convert_actions" in request:
+                return {"absolute": np.asarray(request["convert_actions"], np.float32)}
+            return {
+                "z": np.zeros(8, np.float32),
+                "reference": np.zeros((3, 12), np.float32),
+                "absolute": np.zeros((3, 12), np.float32),
+                "normalized_state": np.zeros(12, np.float32),
+            }
+
+    args = SimpleNamespace(
+        chunk_len=2,
+        vla_horizon=3,
+        control_hz=1000,
+        sigma=0.0,
+        prompt="test",
+        critical_timeout_s=1.0,
+        full_timeout_s=0.01,
+        max_arm_delta_deg=12.0,
+        arm_low=np.full(6, -10, np.float32),
+        arm_high=np.full(6, 10, np.float32),
+    )
+    hardware = FakeHardware()
+    keys = [None, "h", None, None, "\n"]
+    learner = Learner(Actor(8, 24, 2, 12), Critic(8, 24, 2, 12), horizon=2)
+    monkeypatch.setattr("rlt.online_runner.Keys", FakeKeys)
+    monkeypatch.setattr("rlt.online_runner._read_episode_label", lambda: True)
+    ticks, success, _, aborted = run_episode(
+        args,
+        "full-task",
+        hardware,
+        FakeFeature(),
+        learner,
+        torch.no_grad(),
+        np.full(12, -1, np.float32),
+        np.full(12, 1, np.float32),
+    )
+    assert success and not aborted
+    assert [tick["source"] for tick in ticks] == ["vla", "human"]
+    assert all(tick["critical"] for tick in ticks[1:])
+    assert hardware.begins == 1 and hardware.rebases == 1
+    assert len(hardware.sent) == 4
+    assert np.array_equal(hardware.sent[1], hardware.sent[2])
+    assert np.array_equal(hardware.sent[1], np.full(12, 2, np.float32))
+    assert not np.array_equal(hardware.sent[1], np.ones(12, np.float32))
+    output = capsys.readouterr().out
+    assert "Human syncing:" in output
+    assert "arm=" in output
+    assert "robot=" in output
+    assert "Human control activ" in output
+
+
+def test_human_target_deadband_holds_pose():
+    class Read:
+        ok = True
+        angle_deg = 10.5
+
+    hardware = D1Hardware.__new__(D1Hardware)
+    hardware.args = SimpleNamespace(
+        arm_low=np.full(6, -10, np.float32),
+        arm_high=np.full(6, 10, np.float32),
+        human_deadband_arm_deg=1.0,
+        human_deadband_hand=0.02,
+    )
+    hardware.exo_zero = np.full(6, 10, np.float32)
+    hardware.takeover_arm = np.zeros(6, np.float32)
+    hardware.glove_zero = np.full(6, 0.5, np.float32)
+    hardware.takeover_hand = np.full(6, 0.5, np.float32)
+    hardware.exo = SimpleNamespace(
+        read_frame=lambda: SimpleNamespace(reads=[Read() for _ in range(6)])
+    )
+    hardware.glove = SimpleNamespace(
+        get_norm_values=lambda: np.full(6, 0.51, np.float32)
+    )
+
+    expected = np.concatenate([np.zeros(6), np.full(6, 0.5)]).astype(np.float32)
+    assert np.array_equal(hardware.human_target(), expected)
 
 
 def test_stride_terminal_human_reference_and_proprio():

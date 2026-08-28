@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-commit_message="${*:-ver2: human intervene update}"
+commit_message="${*:-ver2: update}"
 
 git rev-parse --is-inside-work-tree >/dev/null
 git add -A

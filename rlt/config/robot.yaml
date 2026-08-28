@@ -8,6 +8,11 @@ runtime:
   feature_port: 5556
   critical_timeout_s: 20
   full_timeout_s: 30
+  human_sync_arm_threshold_deg: 10
+  human_sync_hand_threshold: 0.2
+  human_sync_frames: 3
+  human_deadband_arm_deg: 1
+  human_deadband_hand: 0.02
   arm_joint_limits_deg:
     joint_1: [-45, 80]
     joint_2: [-90, 26]
