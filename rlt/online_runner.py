@@ -585,7 +585,7 @@ def run(args, hardware_cls) -> None:
     logging.basicConfig(level=logging.INFO)
     feature = WebsocketClientPolicy(args.host, args.port)
     metadata = feature.get_server_metadata()
-    if not metadata.get("supports_action_conversion", False):
+    if args.phase != "eval-base" and not metadata.get("supports_action_conversion", False):
         raise RuntimeError(
             "feature server does not support actor action conversion; "
             "restart it from the current rlt.serve_features"
