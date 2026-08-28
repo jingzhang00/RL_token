@@ -857,13 +857,10 @@ def run(args, hardware_cls) -> None:
                     outcomes.append(record)
                     if wandb_run is not None:
                         payload = {
-                            "episode": len(outcomes),
-                            "episode/success": int(success),
                             "episode/success_rate": sum(
                                 item["success"] for item in outcomes
                             )
                             / len(outcomes),
-                            "episode/seconds": elapsed,
                             "episode/transitions": len(rows),
                             "episode/replay_size": len(replay) if replay is not None else 0,
                         }
@@ -885,7 +882,6 @@ def run(args, hardware_cls) -> None:
         json.dumps(
             {
                 "episodes": len(outcomes),
-                "successes": successes,
                 "success_rate": successes / max(1, len(outcomes)),
                 "successes_per_10min": successes / max(minutes, 1e-9) * 10,
             },

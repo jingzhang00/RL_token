@@ -29,6 +29,21 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+if fuser -n tcp "${FEATURE_PORT}" >/dev/null 2>&1; then
+    echo "Stopping process using TCP port ${FEATURE_PORT}"
+    fuser -k -TERM -n tcp "${FEATURE_PORT}" >/dev/null 2>&1 || true
+    for _ in $(seq 1 50); do
+        if ! fuser -n tcp "${FEATURE_PORT}" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
+    if fuser -n tcp "${FEATURE_PORT}" >/dev/null 2>&1; then
+        echo "TCP port ${FEATURE_PORT} is still in use" >&2
+        exit 1
+    fi
+fi
+
 "${PYTHON}" -m rlt.serve_features \
     --config "${CONFIG}" \
     --token "${TOKEN_CHECKPOINT}" \
