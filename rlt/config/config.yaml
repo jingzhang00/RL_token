@@ -58,9 +58,9 @@ online_rl:
   critic_updates_per_transition: 5
   batch_size: 256
   warmup_transitions: 1000
-  offline_warmup_updates: 10000
+  offline_warmup_updates: 5000
   chunk_length: 10
-  replay_capacity: 1000000
+  replay_capacity: 2000000
   output: checkpoints/online
   checkpoint_interval: 10000
   evaluation_episodes: 50

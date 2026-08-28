@@ -286,11 +286,13 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
         else args.full_timeout_s
     )
     period = 1.0 / args.control_hz
-    print(
-        f"\n{phase}: Enter=end episode, c=handoff, y=approve VLA chunk, "
-        f"space=human, s/f=label after ending, q=abort "
-        f"(timeout {timeout}s)"
+    controls = (
+        "Enter=end episode, s/f=label after ending, q=abort"
+        if warmup
+        else "Enter=end episode, c=handoff, y=approve VLA chunk, "
+        "space=human, s/f=label after ending, q=abort"
     )
+    print(f"\n{phase}: {controls} (timeout {timeout}s)")
     with Keys() as keys:
         while time.monotonic() - started < timeout:
             tick_start = time.monotonic()
@@ -315,7 +317,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 if critical:
                     actor_chunk = None
                     actor_offset = args.chunk_len
-            if key == " ":
+            if key == " " and not warmup:
                 human = not human
                 if human:
                     hardware.rebase_human(
@@ -383,7 +385,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         with model_lock, torch.inference_mode():
                             zt = torch.from_numpy(z[None]).to(learner.device)
                             pt = torch.from_numpy(proprio[None]).to(learner.device)
-                            rt = torch.from_numpy(reference_chunk[None]).to(
+                            rt = torch.from_numpy(reference_chunk[: args.chunk_len][None]).to(
                                 learner.device
                             )
                             actor_chunk, _ = learner.actor.sample(
@@ -394,12 +396,10 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     absolute = normalized_to_absolute(actor_chunk, state, q01, q99)[
                         actor_offset
                     ]
-                    actor_offset += 1
                 else:
                     absolute = normalized_to_absolute(
                         vla_chunk[vla_offset], state, q01, q99
                     )
-                    vla_offset += 1
                 command = safe_command(
                     absolute,
                     state,
@@ -408,6 +408,10 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     args.arm_high,
                 )
                 hardware.send(command)
+                if source == "actor":
+                    actor_offset += 1
+                elif source == "vla":
+                    vla_offset += 1
             except Exception:
                 logging.exception("%s command failed; command paused", source)
                 time.sleep(max(0, period - (time.monotonic() - tick_start)))
@@ -541,11 +545,21 @@ def run(args, hardware_cls) -> None:
     logging.info("Online actor/critic device: %s", learner_device)
     z_dim = int(metadata.get("z_dim", 2048))
     action_dim = int(metadata.get("action_dim", len(q01)))
-    proprio_dim = getattr(hardware_cls, "proprio_dim", None)
+    hardware_proprio_dim = getattr(hardware_cls, "proprio_dim", None)
+    proprio_dim = hardware_proprio_dim
     if resume_checkpoint is not None:
-        action_dim, proprio_dim = _learner_dimensions(
+        checkpoint_action_dim, checkpoint_proprio_dim = _learner_dimensions(
             resume_checkpoint, z_dim, args.chunk_len, args.vla_horizon
         )
+        if (
+            hardware_proprio_dim is not None
+            and checkpoint_proprio_dim != hardware_proprio_dim
+        ):
+            raise ValueError(
+                f"checkpoint proprio_dim={checkpoint_proprio_dim} does not match "
+                f"hardware proprio_dim={hardware_proprio_dim}"
+            )
+        action_dim, proprio_dim = checkpoint_action_dim, checkpoint_proprio_dim
     if action_dim != len(q01):
         raise ValueError(
             f"learner action_dim={action_dim} does not match VLA action_dim={len(q01)}"
@@ -619,8 +633,10 @@ def run(args, hardware_cls) -> None:
         "C": args.chunk_len,
         "stride": settings.transition_stride_steps,
         "kind": "online",
+        "bootstrap_complete": True,
     }
-    warmup_metadata = {**replay_metadata, "kind": "warmup"}
+    warmup_metadata = {key: value for key, value in replay_metadata.items() if key != "bootstrap_complete"}
+    warmup_metadata["kind"] = "warmup"
     try:
         if args.phase in train_phases and settings.wandb_enabled:
             wandb_run = _init_wandb(settings, args, learner, warmup_transitions)
@@ -648,6 +664,7 @@ def run(args, hardware_cls) -> None:
                     capacity=int(settings.online_rl["replay_capacity"]),
                     metadata=warmup_metadata,
                 )
+                warmup_replay.set_metadata({"bootstrap_complete": False})
                 warmup_episode = 0
                 while len(warmup_replay) < warmup_transitions:
                     warmup_episode += 1
@@ -663,6 +680,7 @@ def run(args, hardware_cls) -> None:
                         horizon=settings.transition_horizon,
                         stride=settings.transition_stride_steps,
                     )
+                    rows = [row for row in rows if row.source == "vla"]
                     for row in rows:
                         warmup_replay.add(row)
                     record = {
@@ -701,6 +719,7 @@ def run(args, hardware_cls) -> None:
                 )
                 rollout_output.mkdir(parents=True, exist_ok=True)
                 learner.save(checkpoint, learner_metadata)
+                warmup_replay.set_metadata({"bootstrap_complete": True})
                 warmup_replay.close()
                 warmup_replay = None
 

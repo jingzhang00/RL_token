@@ -81,11 +81,13 @@ class Replay:
             expected = {key: json.dumps(value, sort_keys=True) for key, value in metadata.items()}
             stored = dict(self.db.execute("SELECT key, value FROM replay_metadata"))
             if stored:
-                if stored != expected:
+                if any(stored.get(key) != value for key, value in expected.items()):
+                    self.db.close()
                     raise ValueError(
                         f"replay metadata mismatch for {path}: stored={stored}, expected={expected}"
                     )
             elif self.db.execute("SELECT 1 FROM transitions LIMIT 1").fetchone() is not None:
+                self.db.close()
                 raise ValueError(
                     f"replay {path} has data but no metadata; archive it before changing H/C"
                 )
@@ -95,6 +97,17 @@ class Replay:
                     expected.items(),
                 )
         self.db.commit()
+
+    def set_metadata(self, values: dict[str, object]) -> None:
+        encoded = {
+            key: json.dumps(value, sort_keys=True) for key, value in values.items()
+        }
+        with self.lock, self.db:
+            self.db.executemany(
+                "INSERT INTO replay_metadata(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                encoded.items(),
+            )
 
     def __len__(self) -> int:
         with self.lock:

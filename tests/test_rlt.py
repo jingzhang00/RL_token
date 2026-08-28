@@ -3,9 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
+from types import SimpleNamespace
 
 from rlt.models import Actor, Critic, RLToken, actor_loss, reference_dropout
-from rlt.online_runner import _read_episode_label
+from rlt.online_runner import _offline_warmup, _read_episode_label, run_episode
 from rlt.rl_core import Learner, Replay, Transition, build_transitions, make_proprio
 from rlt.actions import absolute_to_normalized, normalized_to_absolute, safe_command
 from rlt.serve_features import FeaturePolicy
@@ -203,6 +204,89 @@ def test_online_update_counters_are_separate():
     assert learner.online_critic_steps == 2
     assert learner.actor_steps == 1
     assert learner.online_actor_steps == 1
+
+
+def test_offline_warmup_updates_only_total_counters(tmp_path):
+    replay = Replay(tmp_path / "warmup.sqlite", capacity=4)
+    for index in range(4):
+        replay.add(_transition(index))
+    learner = Learner(Actor(8, 4, 2, 3), Critic(8, 4, 2, 3), horizon=2)
+    _offline_warmup(learner, replay, updates=3, batch_size=2)
+    assert learner.critic_steps == 3
+    assert learner.online_critic_steps == 0
+    replay.close()
+
+
+def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch):
+    class FakeKeys:
+        def __enter__(self):
+            return self
+
+        def read(self):
+            return keys.pop(0)
+
+        def __exit__(self, *_):
+            return None
+
+    class FakeHardware:
+        def __init__(self):
+            self.sent = []
+
+        def read(self):
+            return np.zeros((8, 8, 3), np.uint8), np.zeros(12, np.float32)
+
+        def send(self, command):
+            self.sent.append(command)
+
+    class FakeFeature:
+        def infer(self, _):
+            return {
+                "z": np.zeros(8, np.float32),
+                "reference": np.zeros((3, 12), np.float32),
+            }
+
+    args = SimpleNamespace(
+        chunk_len=2,
+        vla_horizon=3,
+        control_hz=1000,
+        sigma=0.0,
+        prompt="test",
+        critical_timeout_s=1.0,
+        full_timeout_s=1.0,
+        max_arm_delta_deg=12.0,
+        arm_low=np.full(6, -10, np.float32),
+        arm_high=np.full(6, 10, np.float32),
+    )
+    keys = [None, None, "c", None, "\n"]
+    learner = Learner(Actor(8, 24, 2, 12), Critic(8, 24, 2, 12), horizon=2)
+    monkeypatch.setattr("rlt.online_runner.Keys", FakeKeys)
+    monkeypatch.setattr("rlt.online_runner._read_episode_label", lambda: True)
+    ticks, success, _, aborted = run_episode(
+        args,
+        "full-task",
+        FakeHardware(),
+        FakeFeature(),
+        learner,
+        torch.no_grad(),
+        np.full(12, -1, np.float32),
+        np.full(12, 1, np.float32),
+    )
+    assert success and not aborted
+    assert [tick["source"] for tick in ticks] == ["vla", "vla", "actor", "actor"]
+
+    keys = ["c", " ", None, None, "\n"]
+    ticks, success, _, aborted = run_episode(
+        args,
+        "warmup",
+        FakeHardware(),
+        FakeFeature(),
+        learner,
+        torch.no_grad(),
+        np.full(12, -1, np.float32),
+        np.full(12, 1, np.float32),
+    )
+    assert success and not aborted
+    assert all(tick["source"] == "vla" and not tick["critical"] for tick in ticks)
 
 
 def test_stride_terminal_human_reference_and_proprio():
