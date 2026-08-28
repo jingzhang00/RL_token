@@ -29,25 +29,23 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [[ "${RLT_START_FEATURE_SERVER:-true}" == "true" ]]; then
-    "${PYTHON}" -m rlt.serve_features \
-        --config "${CONFIG}" \
-        --token "${TOKEN_CHECKPOINT}" \
-        --host "${FEATURE_HOST}" \
-        --port "${FEATURE_PORT}" \
-        >"${FEATURE_LOG}" 2>&1 &
-    FEATURE_PID=$!
-    for _ in $(seq 1 100); do
-        if ! kill -0 "${FEATURE_PID}" 2>/dev/null; then
-            sed -n '1,80p' "${FEATURE_LOG}" >&2
-            exit 1
-        fi
-        if (echo >/dev/tcp/${FEATURE_HOST}/${FEATURE_PORT}) 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
-    done
-fi
+"${PYTHON}" -m rlt.serve_features \
+    --config "${CONFIG}" \
+    --token "${TOKEN_CHECKPOINT}" \
+    --host "${FEATURE_HOST}" \
+    --port "${FEATURE_PORT}" \
+    >"${FEATURE_LOG}" 2>&1 &
+FEATURE_PID=$!
+for _ in $(seq 1 100); do
+    if ! kill -0 "${FEATURE_PID}" 2>/dev/null; then
+        sed -n '1,80p' "${FEATURE_LOG}" >&2
+        exit 1
+    fi
+    if (echo >/dev/tcp/${FEATURE_HOST}/${FEATURE_PORT}) 2>/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
 
 exec "${PYTHON}" -m robots.d1.online_rl_d1 \
     --config "${CONFIG}" \
