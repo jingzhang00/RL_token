@@ -420,11 +420,15 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         "prompt": args.prompt,
                     }
                 )
-                z = np.asarray(features["z"], np.float32)
-                reference_chunk = np.asarray(features["reference"], np.float32)[
+                z = np.array(features["z"], dtype=np.float32, copy=True)
+                reference_chunk = np.array(
+                    features["reference"], dtype=np.float32, copy=True
+                )[
                     : args.vla_horizon
                 ]
-                absolute_reference = np.asarray(features["absolute"], np.float32)[
+                absolute_reference = np.array(
+                    features["absolute"], dtype=np.float32, copy=True
+                )[
                     : args.vla_horizon
                 ]
                 if reference_chunk.shape[0] < args.vla_horizon:
