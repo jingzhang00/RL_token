@@ -233,7 +233,7 @@ def test_offline_warmup_updates_only_total_counters(tmp_path):
     replay.close()
 
 
-def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch, capsys):
+def test_full_task_c_and_h_switch_between_vla_actor_and_human(monkeypatch):
     class FakeKeys:
         def __enter__(self):
             return self
@@ -247,12 +247,19 @@ def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch, capsys):
     class FakeHardware:
         def __init__(self):
             self.sent = []
+            self.rebases = 0
 
         def read(self):
             return np.zeros((8, 8, 3), np.uint8), np.zeros(12, np.float32)
 
         def send(self, command):
             self.sent.append(command)
+
+        def rebase_human(self, _):
+            self.rebases += 1
+
+        def human_target(self):
+            return np.zeros(12, np.float32)
 
     class FakeFeature:
         def infer(self, _):
@@ -279,7 +286,7 @@ def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch, capsys):
         arm_low=np.full(6, -10, np.float32),
         arm_high=np.full(6, 10, np.float32),
     )
-    keys = [None, None, "c", None, "\n"]
+    keys = [None, "c", None, "h", None, "h", None, "\n"]
     learner = Learner(Actor(8, 24, 2, 12), Critic(8, 24, 2, 12), horizon=2)
     monkeypatch.setattr("rlt.online_runner.Keys", FakeKeys)
     monkeypatch.setattr("rlt.online_runner._read_episode_label", lambda: True)
@@ -294,14 +301,18 @@ def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch, capsys):
         np.full(12, 1, np.float32),
     )
     assert success and not aborted
-    assert [tick["source"] for tick in ticks] == ["vla", "vla", "actor", "actor"]
+    assert [tick["source"] for tick in ticks] == [
+        "vla", "actor", "actor", "human", "human", "vla", "vla"
+    ]
+    assert [tick["critical"] for tick in ticks] == [
+        False, True, True, True, True, False, False
+    ]
     assert conversions and conversions[0].shape == (2, 12)
-    assert "y=approve VLA chunk" not in capsys.readouterr().out
 
-    keys = ["c", " ", None, None, "\n"]
+    keys = ["h", None, "h", None, "\n"]
     ticks, success, _, aborted = run_episode(
         args,
-        "warmup",
+        "full-task",
         FakeHardware(),
         FakeFeature(),
         learner,
@@ -310,10 +321,11 @@ def test_c_handoff_starts_actor_at_a_chunk_boundary(monkeypatch, capsys):
         np.full(12, 1, np.float32),
     )
     assert success and not aborted
-    assert all(tick["source"] == "vla" and not tick["critical"] for tick in ticks)
+    assert [tick["source"] for tick in ticks] == ["human", "human", "vla", "vla"]
+    assert [tick["critical"] for tick in ticks] == [True, True, False, False]
 
 
-def test_critical_only_requires_approval_for_each_vla_chunk(monkeypatch):
+def test_critical_only_starts_with_teleop_and_c_starts_rl(monkeypatch, capsys):
     class FakeKeys:
         def __enter__(self):
             return self
@@ -325,14 +337,26 @@ def test_critical_only_requires_approval_for_each_vla_chunk(monkeypatch):
             return None
 
     class FakeHardware:
+        def __init__(self):
+            self.sent = []
+            self.rebases = 0
+
         def read(self):
             return np.zeros((8, 8, 3), np.uint8), np.zeros(12, np.float32)
 
-        def send(self, _):
-            pass
+        def send(self, command):
+            self.sent.append(command)
+
+        def rebase_human(self, _):
+            self.rebases += 1
+
+        def human_target(self):
+            return np.zeros(12, np.float32)
 
     class FakeFeature:
         def infer(self, _):
+            if "convert_actions" in _:
+                return {"absolute": np.asarray(_["convert_actions"], np.float32)}
             return {
                 "z": np.zeros(8, np.float32),
                 "reference": np.zeros((3, 12), np.float32),
@@ -352,14 +376,15 @@ def test_critical_only_requires_approval_for_each_vla_chunk(monkeypatch):
         arm_low=np.full(6, -10, np.float32),
         arm_high=np.full(6, 10, np.float32),
     )
-    keys = ["y", None, None, None, "\n"]
+    hardware = FakeHardware()
+    keys = [None, None, "c", None, "h", None, "h", None, "\n"]
     learner = Learner(Actor(8, 24, 2, 12), Critic(8, 24, 2, 12), horizon=2)
     monkeypatch.setattr("rlt.online_runner.Keys", FakeKeys)
     monkeypatch.setattr("rlt.online_runner._read_episode_label", lambda: True)
     ticks, success, _, aborted = run_episode(
         args,
         "critical-only",
-        FakeHardware(),
+        hardware,
         FakeFeature(),
         learner,
         torch.no_grad(),
@@ -367,7 +392,29 @@ def test_critical_only_requires_approval_for_each_vla_chunk(monkeypatch):
         np.full(12, 1, np.float32),
     )
     assert success and not aborted
-    assert len(ticks) == 2
+    assert [tick["source"] for tick in ticks] == [
+        "actor", "actor", "human", "human", "actor", "actor"
+    ]
+    assert all(tick["critical"] for tick in ticks)
+    assert len(hardware.sent) == 8
+    assert hardware.rebases == 2
+    assert "y=approve VLA chunk" not in capsys.readouterr().out
+
+    hardware = FakeHardware()
+    keys = ["h", None, "h", None, "\n"]
+    ticks, success, _, aborted = run_episode(
+        args,
+        "critical-only",
+        hardware,
+        FakeFeature(),
+        learner,
+        torch.no_grad(),
+        np.full(12, -1, np.float32),
+        np.full(12, 1, np.float32),
+    )
+    assert success and not aborted
+    assert [tick["source"] for tick in ticks] == ["human", "human", "actor", "actor"]
+    assert all(tick["critical"] for tick in ticks)
 
 
 def test_stride_terminal_human_reference_and_proprio():

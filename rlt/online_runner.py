@@ -301,7 +301,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     warmup = phase == "warmup"
     actor_phase = phase in {"critical-only", "full-task", "eval-rlt"}
     critical = False
-    human = False
+    human = phase == "critical-only"
     aborted = False
     ticks = []
     previous = None
@@ -311,35 +311,34 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     actor_chunk = None
     actor_absolute_chunk = None
     actor_offset = args.chunk_len
-    vla_approved = False
-    approval_prompted = False
-    handoff_requested = False
     started = time.monotonic()
     timeout = (
         args.critical_timeout_s
-        if phase.startswith("eval") and args.eval_task == "critical-only"
+        if phase == "critical-only"
+        or (phase.startswith("eval") and args.eval_task == "critical-only")
         else args.full_timeout_s
     )
-    deadline = started + timeout
-    approval_wait_started = None
+    deadline = None if phase == "critical-only" else started + timeout
     period = 1.0 / args.control_hz
+    if phase == "critical-only":
+        hardware.rebase_human(hardware.read()[1])
     if warmup:
         controls = "Enter=end episode, s/f=label after ending, q=abort"
     elif phase == "critical-only":
         controls = (
-            "Enter=end episode, c=handoff, y=approve VLA chunk, "
-            "space=human, s/f=label after ending, q=abort"
+            "Enter=end episode, c=RL critical phase, h=human, "
+            "s/f=label after ending, q=abort"
         )
     else:
         controls = (
-            "Enter=end episode, c=handoff, space=human, "
+            "Enter=end episode, c=critical phase, h=human, "
             "s/f=label after ending, q=abort"
         )
     print(f"\n{phase}: {controls} (timeout {timeout}s)")
     with Keys() as keys:
         while True:
             now = time.monotonic()
-            if approval_wait_started is None and now >= deadline:
+            if deadline is not None and now >= deadline:
                 break
             tick_start = time.monotonic()
             key = keys.read()
@@ -350,24 +349,39 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 if ticks:
                     ticks[-1]["done"] = True
                     break
+                if phase == "critical-only":
+                    break
                 continue
-            if key == "y" and phase == "critical-only" and not critical:
-                vla_approved = True
-                approval_prompted = False
-            if key == "c" and not warmup and not critical:
-                if phase == "eval-base":
-                    critical = True
-                elif human or vla_chunk is None or vla_offset >= args.chunk_len:
-                    critical = True
-                else:
-                    handoff_requested = True
-                if critical:
+
+            if key == "c" and not warmup:
+                if not (phase == "critical-only" and critical):
+                    critical = not critical
+                    human = False
+                    if phase == "critical-only":
+                        deadline = time.monotonic() + timeout if critical else None
                     actor_chunk = None
                     actor_absolute_chunk = None
                     actor_offset = args.chunk_len
-            if key == " " and not warmup:
-                human = not human
+                    vla_chunk = None
+                    vla_absolute_chunk = None
+                    vla_offset = args.chunk_len
+
+            if key == "h" and not warmup:
                 if human:
+                    if phase == "critical-only" and critical:
+                        human = False
+                    elif phase == "critical-only":
+                        critical = True
+                        deadline = time.monotonic() + timeout
+                    elif phase != "critical-only":
+                        human = False
+                        critical = False
+                else:
+                    human = True
+                    if phase in {"critical-only", "full-task"} and not critical:
+                        critical = True
+                        if phase == "critical-only":
+                            deadline = time.monotonic() + timeout
                     hardware.rebase_human(
                         previous if previous is not None else hardware.read()[1]
                     )
@@ -375,28 +389,25 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 actor_absolute_chunk = None
                 actor_offset = args.chunk_len
                 vla_chunk = None
+                vla_absolute_chunk = None
                 vla_offset = args.chunk_len
-                vla_approved = False
-                approval_prompted = False
-                handoff_requested = False
 
-            waiting_for_approval = (
-                phase == "critical-only"
-                and not critical
-                and not vla_approved
-                and (vla_chunk is None or vla_offset >= args.chunk_len)
-            )
-            if waiting_for_approval:
-                if approval_wait_started is None:
-                    approval_wait_started = time.monotonic()
-                if not approval_prompted:
-                    print("VLA chunk ready; press y to approve it.")
-                    approval_prompted = True
-                time.sleep(period)
+            if phase == "critical-only" and not critical:
+                image, state = hardware.read()
+                previous = state.copy()
+                try:
+                    command = safe_command(
+                        hardware.human_target(),
+                        state,
+                        args.max_arm_delta_deg,
+                        args.arm_low,
+                        args.arm_high,
+                    )
+                    hardware.send(command)
+                except Exception:
+                    logging.exception("human command failed; command paused")
+                time.sleep(max(0, period - (time.monotonic() - tick_start)))
                 continue
-            if approval_wait_started is not None:
-                deadline += time.monotonic() - approval_wait_started
-                approval_wait_started = None
 
             image, state = hardware.read()
             proprio = make_proprio(state, previous, dt=period)
@@ -431,18 +442,6 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 time.sleep(max(0, period - (time.monotonic() - tick_start)))
                 continue
 
-            if (
-                not human
-                and not critical
-                and handoff_requested
-                and (vla_chunk is None or vla_offset >= args.chunk_len)
-            ):
-                critical = True
-                handoff_requested = False
-                actor_chunk = None
-                actor_absolute_chunk = None
-                actor_offset = args.chunk_len
-
             source = "human" if human else "actor" if critical and actor_phase else "vla"
             if (
                 source == "vla"
@@ -451,8 +450,6 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 vla_chunk = reference_chunk.copy()
                 vla_absolute_chunk = absolute_reference.copy()
                 vla_offset = 0
-                vla_approved = False
-                approval_prompted = False
             try:
                 if source == "human":
                     absolute = hardware.human_target()
@@ -852,19 +849,7 @@ def run(args, hardware_cls) -> None:
                     if aborted:
                         continue
                     if args.phase in train_phases:
-                        critical_start = next(
-                            (
-                                index
-                                for index, tick in enumerate(ticks)
-                                if tick.get("critical")
-                            ),
-                            None,
-                        )
-                        target_ticks = (
-                            ticks[critical_start:]
-                            if critical_start is not None
-                            else []
-                        )
+                        target_ticks = [tick for tick in ticks if tick.get("critical")]
                         rows = build_transitions(
                             target_ticks,
                             horizon=settings.transition_horizon,
