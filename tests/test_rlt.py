@@ -6,7 +6,12 @@ import torch
 from types import SimpleNamespace
 
 from rlt.models import Actor, Critic, RLToken, actor_loss, reference_dropout
-from rlt.online_runner import _offline_warmup, _read_episode_label, run_episode
+from rlt.online_runner import (
+    _confirm_online_rollout,
+    _offline_warmup,
+    _read_episode_label,
+    run_episode,
+)
 from rlt.rl_core import Learner, Replay, Transition, build_transitions, make_proprio
 from rlt.actions import absolute_to_normalized, normalized_to_absolute, safe_command
 from rlt.serve_features import FeaturePolicy
@@ -22,6 +27,12 @@ def test_episode_label_is_collected_after_episode_ends(monkeypatch):
 def test_episode_label_can_abort(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _: "q")
     assert _read_episode_label() is None
+
+
+def test_online_rollout_confirmation(monkeypatch):
+    answers = iter(["invalid", "y"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert _confirm_online_rollout()
 
 
 def test_rl_token_shape_causality_and_stop_gradient():

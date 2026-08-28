@@ -151,6 +151,30 @@ def _read_episode_label() -> bool | None:
         print("Please enter s, f, or q.")
 
 
+def _confirm_offline_warmup() -> bool:
+    while True:
+        answer = input(
+            "Warmup collection is complete. Start offline Actor/Critic warmup? [y/n]: "
+        ).strip().lower()
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no", "q", "quit"}:
+            return False
+        print("Please enter y or n.")
+
+
+def _confirm_online_rollout() -> bool:
+    while True:
+        answer = input(
+            "Ready for online rollout. Start? [y/n]: "
+        ).strip().lower()
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no", "q", "quit"}:
+            return False
+        print("Please enter y or n.")
+
+
 def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
     move_to_initial_pose = getattr(hardware, "move_to_initial_pose", None)
     if move_to_initial_pose is None:
@@ -523,7 +547,11 @@ def run(args, hardware_cls) -> None:
     args.output = Path(args.output or settings.online_rl["output"])
     rollout_output = args.output / "rollout"
     checkpoint = rollout_output / "learner_latest.pt"
-    resume_checkpoint = args.resume or args.actor_checkpoint
+    resume_checkpoint = (
+        args.resume
+        or args.actor_checkpoint
+        or settings.online_rl.get("resume")
+    )
     if resume_checkpoint is None:
         resume_checkpoint = checkpoint if checkpoint.exists() else None
     if resume_checkpoint is not None:
@@ -557,6 +585,11 @@ def run(args, hardware_cls) -> None:
     logging.basicConfig(level=logging.INFO)
     feature = WebsocketClientPolicy(args.host, args.port)
     metadata = feature.get_server_metadata()
+    if not metadata.get("supports_action_conversion", False):
+        raise RuntimeError(
+            "feature server does not support actor action conversion; "
+            "restart it from the current rlt.serve_features"
+        )
     q01, q99 = (
         np.asarray(metadata["action_q01"], np.float32),
         np.asarray(metadata["action_q99"], np.float32),
@@ -679,6 +712,7 @@ def run(args, hardware_cls) -> None:
             hardware_cls(args) as hardware,
         ):
             first_episode = True
+            episode_prepared = False
             if bootstrap:
                 online_path = args.output / "replay.sqlite"
                 if online_path.exists():
@@ -733,6 +767,10 @@ def run(args, hardware_cls) -> None:
                         f"Warmup transitions: {len(warmup_replay)}/{warmup_transitions}"
                     )
 
+                _prepare_episode(hardware, args.phase, 1, first_episode)
+                episode_prepared = True
+                if not _confirm_offline_warmup():
+                    return
                 _offline_warmup(
                     learner,
                     warmup_replay,
@@ -748,6 +786,8 @@ def run(args, hardware_cls) -> None:
                 warmup_replay = None
 
             if args.phase in train_phases:
+                if not _confirm_online_rollout():
+                    return
                 replay = Replay(
                     args.output / "replay.sqlite",
                     capacity=int(settings.online_rl["replay_capacity"]),
@@ -771,7 +811,10 @@ def run(args, hardware_cls) -> None:
                 episode = 0
                 while episode_count is None or episode < episode_count:
                     episode += 1
-                    _prepare_episode(hardware, args.phase, episode, first_episode)
+                    if episode_prepared:
+                        episode_prepared = False
+                    else:
+                        _prepare_episode(hardware, args.phase, episode, first_episode)
                     first_episode = False
                     ticks, success, elapsed, aborted = run_episode(
                         args, args.phase, hardware, feature, learner, lock, q01, q99

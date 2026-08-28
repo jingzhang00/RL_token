@@ -95,6 +95,7 @@ def main() -> None:
         "action_horizon": settings.action_horizon,
         "chunk_len": settings.chunk_length,
         "action_dim": settings.action_dim,
+        "supports_action_conversion": True,
         "action_q01": stats["q01"],
         "action_q99": stats["q99"],
         "token_checkpoint": str(args.token),
