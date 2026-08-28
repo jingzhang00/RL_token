@@ -217,7 +217,7 @@ def _init_wandb(settings, args, learner, warmup_transitions):
     )
     wandb_run.define_metric("bootstrap/*", step_metric="bootstrap/critic_step")
     wandb_run.define_metric("online/*", step_metric="online/critic_step")
-    wandb_run.define_metric("episode/*", step_metric="episode")
+    wandb_run.define_metric("episode/success_rate", step_metric="episode")
     return wandb_run
 
 
@@ -887,12 +887,11 @@ def run(args, hardware_cls) -> None:
                     outcomes.append(record)
                     if wandb_run is not None:
                         payload = {
+                            "episode": len(outcomes),
                             "episode/success_rate": sum(
                                 item["success"] for item in outcomes
                             )
                             / len(outcomes),
-                            "episode/transitions": len(rows),
-                            "episode/replay_size": len(replay) if replay is not None else 0,
                         }
                         wandb_run.log(payload)
                     with (args.output / "episodes.jsonl").open("a") as stream:
