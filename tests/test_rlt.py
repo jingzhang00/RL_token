@@ -19,6 +19,11 @@ def test_episode_label_is_collected_after_episode_ends(monkeypatch):
     assert _read_episode_label()
 
 
+def test_episode_label_can_abort(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _: "q")
+    assert _read_episode_label() is None
+
+
 def test_rl_token_shape_causality_and_stop_gradient():
     torch.manual_seed(0)
     model = RLToken(width=16, heads=4, layers=1, mlp_ratio=2, max_tokens=5)

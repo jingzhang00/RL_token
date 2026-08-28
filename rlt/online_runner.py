@@ -16,6 +16,7 @@ import tty
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from openpi_client.websocket_client_policy import WebsocketClientPolicy
 from rlt.actions import (
@@ -136,14 +137,18 @@ class TrainerThread:
             self._save_checkpoint()
 
 
-def _read_episode_label() -> bool:
+def _read_episode_label() -> bool | None:
     while True:
-        label = input("Episode ended. Enter s for success or f for failure: ").strip().lower()
+        label = input(
+            "Episode ended. Enter s for success, f for failure, or q to abort: "
+        ).strip().lower()
         if label in {"s", "success"}:
             return True
         if label in {"f", "failure"}:
             return False
-        print("Please enter s or f.")
+        if label in {"q", "quit", "abort"}:
+            return None
+        print("Please enter s, f, or q.")
 
 
 def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
@@ -243,7 +248,11 @@ def _offline_warmup(
         raise ValueError(
             f"warmup replay has {len(replay)} transitions, need {batch_size}"
         )
-    for index in range(1, updates + 1):
+    for index in tqdm(
+        range(1, updates + 1),
+        desc="Offline Actor/Critic warmup",
+        unit="update",
+    ):
         metrics = learner.update(replay.sample(batch_size))
         if wandb_run is not None and (
             index == 1 or index == updates or index % log_interval == 0
@@ -464,6 +473,8 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     if ticks and not aborted:
         ticks[-1]["done"] = True
         success = _read_episode_label()
+        if success is None:
+            return ticks, False, time.monotonic() - started, True
         ticks[-1]["reward"] = float(success)
         return ticks, success, time.monotonic() - started, aborted
     return ticks, False, time.monotonic() - started, aborted
@@ -698,7 +709,7 @@ def run(args, hardware_cls) -> None:
                         args, "warmup", hardware, feature, learner, lock, q01, q99
                     )
                     if aborted:
-                        return
+                        continue
                     rows = build_transitions(
                         ticks,
                         horizon=settings.transition_horizon,
@@ -716,17 +727,6 @@ def run(args, hardware_cls) -> None:
                         "robot_hours": (time.monotonic() - wall_start) / 3600,
                     }
                     outcomes.append(record)
-                    if wandb_run is not None:
-                        wandb_run.log(
-                            {
-                                "bootstrap/transition_step": len(warmup_replay),
-                                "bootstrap/replay_size": len(warmup_replay),
-                                "episode": len(outcomes),
-                                "episode/success": int(success),
-                                "episode/seconds": elapsed,
-                                "episode/transitions": len(rows),
-                            }
-                        )
                     with (args.output / "episodes.jsonl").open("a") as stream:
                         stream.write(json.dumps(record) + "\n")
                     print(
