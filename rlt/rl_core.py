@@ -68,12 +68,6 @@ class Replay:
             next_z BLOB, next_reference BLOB, proprio BLOB, next_proprio BLOB,
             source TEXT, done INTEGER, rewards BLOB)"""
         )
-        columns = {
-            row[1]
-            for row in self.db.execute("PRAGMA table_info(transitions)").fetchall()
-        }
-        if "rewards" not in columns:
-            self.db.execute("ALTER TABLE transitions ADD COLUMN rewards BLOB")
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS replay_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
@@ -173,7 +167,7 @@ class Replay:
                     _array(h),
                     i,
                     bool(j),
-                    None if k is None else _array(k),
+                    _array(k),
                 )
             for a, b, c, d, e, f, g, h, i, j, k in rows
         ]
@@ -476,6 +470,6 @@ class Learner:
         self.actor_opt.load_state_dict(data["actor_opt"])
         self.critic_opt.load_state_dict(data["critic_opt"])
         self.critic_steps, self.actor_steps = data["critic_steps"], data["actor_steps"]
-        self.online_critic_steps = int(data.get("online_critic_steps", 0))
-        self.online_actor_steps = int(data.get("online_actor_steps", 0))
-        return data.get("metadata", {})
+        self.online_critic_steps = int(data["online_critic_steps"])
+        self.online_actor_steps = int(data["online_actor_steps"])
+        return data["metadata"]

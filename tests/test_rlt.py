@@ -278,6 +278,9 @@ def test_full_task_c_and_h_switch_between_vla_actor_and_human(monkeypatch):
         def send(self, command):
             self.sent.append(command)
 
+        def stop_camera_thread(self):
+            pass
+
         def start_human_episode(self, _):
             pass
 
@@ -381,6 +384,9 @@ def test_critical_only_starts_with_teleop_and_c_starts_rl(monkeypatch, capsys):
 
         def send(self, command):
             self.sent.append(command)
+
+        def stop_camera_thread(self):
+            pass
 
         def start_human_episode(self, _):
             pass
@@ -513,6 +519,9 @@ def test_human_sync_rebases_and_prompts_without_confirmation(monkeypatch, capsys
 
         def send(self, command):
             self.sent.append(command)
+
+        def stop_camera_thread(self):
+            pass
 
     class FakeFeature:
         def infer(self, request):

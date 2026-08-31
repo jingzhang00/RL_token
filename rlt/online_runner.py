@@ -232,19 +232,12 @@ def _confirm_online_rollout() -> bool:
 
 
 def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
-    move_to_initial_pose = getattr(hardware, "move_to_initial_pose", None)
-    if move_to_initial_pose is None:
-        input(f"Reset robot/task for {phase} episode {episode}; press Enter")
-        return
-
     if first:
         input("Calibration: press Enter to run homing, then restore the initial state")
     else:
         input("Episode recorded. Reset robot/task, then press Enter to run homing and restore the initial state")
-    move_to_initial_pose()
-    start_camera_thread = getattr(hardware, "start_camera_thread", None)
-    if start_camera_thread is not None:
-        start_camera_thread()
+    hardware.move_to_initial_pose()
+    hardware.start_camera_thread()
     if first:
         input(f"Initial state reached. Reset robot/task for {phase} episode {episode}; press Enter")
     else:
@@ -278,36 +271,17 @@ def _init_wandb(settings, args, learner, warmup_transitions):
 
 
 def _learner_dimensions(
-    path: Path, z_dim: int, chunk_len: int, vla_horizon: int
+    path: Path, chunk_len: int, vla_horizon: int
 ) -> tuple[int, int]:
-    """Read dimensions from a learner checkpoint, including old checkpoints."""
+    """Read dimensions from a current learner checkpoint."""
     data = torch.load(path, map_location="cpu", weights_only=False)
-    saved = data.get("metadata", {})
-    saved = saved if isinstance(saved, dict) else {}
+    saved = data["metadata"]
     for key, expected in (("C", chunk_len), ("H", vla_horizon)):
-        if key in saved and int(saved[key]) != expected:
+        if int(saved[key]) != expected:
             raise ValueError(
                 f"checkpoint {path} has {key}={saved[key]}, expected {key}={expected}"
             )
-    action_dim = saved.get("action_dim")
-    proprio_dim = saved.get("proprio_dim")
-    if action_dim is None or proprio_dim is None:
-        actor = data.get("actor", {})
-        weights = [
-            value
-            for key, value in actor.items()
-            if key.endswith("weight") and getattr(value, "ndim", 0) == 2
-        ]
-        if len(weights) < 2:
-            raise ValueError(f"cannot infer actor dimensions from {path}")
-        output_dim = int(weights[-1].shape[0])
-        if action_dim is None:
-            if output_dim % chunk_len:
-                raise ValueError(f"checkpoint action shape is incompatible with C={chunk_len}")
-            action_dim = output_dim // chunk_len
-        if proprio_dim is None:
-            proprio_dim = int(weights[0].shape[1]) - z_dim - output_dim
-    action_dim, proprio_dim = int(action_dim), int(proprio_dim)
+    action_dim, proprio_dim = int(saved["action_dim"]), int(saved["proprio_dim"])
     if action_dim < 1 or proprio_dim < 1:
         raise ValueError(
             f"invalid checkpoint dimensions: action_dim={action_dim}, "
@@ -662,9 +636,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
             )
             time.sleep(max(0, period - (time.monotonic() - tick_start)))
 
-    stop_camera_thread = getattr(hardware, "stop_camera_thread", None)
-    if stop_camera_thread is not None:
-        stop_camera_thread()
+    hardware.stop_camera_thread()
     if ticks and not aborted:
         ticks[-1]["done"] = True
         success = _read_episode_label()
@@ -784,7 +756,7 @@ def run(args, hardware_cls) -> None:
     logging.basicConfig(level=logging.INFO)
     feature = WebsocketClientPolicy(args.host, args.port)
     metadata = feature.get_server_metadata()
-    if args.phase != "eval-base" and not metadata.get("supports_action_conversion", False):
+    if args.phase != "eval-base" and not metadata["supports_action_conversion"]:
         raise RuntimeError(
             "feature server does not support actor action conversion; "
             "restart it from the current rlt.serve_features"
@@ -793,9 +765,9 @@ def run(args, hardware_cls) -> None:
         np.asarray(metadata["action_q01"], np.float32),
         np.asarray(metadata["action_q99"], np.float32),
     )
-    if int(metadata.get("action_horizon", args.vla_horizon)) != args.vla_horizon:
+    if int(metadata["action_horizon"]) != args.vla_horizon:
         raise ValueError(
-            f"feature server H={metadata.get('action_horizon')} does not match "
+            f"feature server H={metadata['action_horizon']} does not match "
             f"configured H={args.vla_horizon}"
         )
     learner_device = (
@@ -810,30 +782,22 @@ def run(args, hardware_cls) -> None:
             "--learner-device=cuda requested but torch.cuda.is_available() is false"
         )
     logging.info("Online actor/critic device: %s", learner_device)
-    z_dim = int(metadata.get("z_dim", 2048))
-    action_dim = int(metadata.get("action_dim", len(q01)))
-    hardware_proprio_dim = getattr(hardware_cls, "proprio_dim", None)
-    proprio_dim = hardware_proprio_dim
+    z_dim = int(metadata["z_dim"])
+    action_dim = int(metadata["action_dim"])
+    proprio_dim = hardware_cls.proprio_dim
     if resume_checkpoint is not None:
         checkpoint_action_dim, checkpoint_proprio_dim = _learner_dimensions(
-            resume_checkpoint, z_dim, args.chunk_len, args.vla_horizon
+            resume_checkpoint, args.chunk_len, args.vla_horizon
         )
-        if (
-            hardware_proprio_dim is not None
-            and checkpoint_proprio_dim != hardware_proprio_dim
-        ):
+        if checkpoint_proprio_dim != proprio_dim:
             raise ValueError(
                 f"checkpoint proprio_dim={checkpoint_proprio_dim} does not match "
-                f"hardware proprio_dim={hardware_proprio_dim}"
+                f"hardware proprio_dim={proprio_dim}"
             )
         action_dim, proprio_dim = checkpoint_action_dim, checkpoint_proprio_dim
     if action_dim != len(q01):
         raise ValueError(
             f"learner action_dim={action_dim} does not match VLA action_dim={len(q01)}"
-        )
-    if proprio_dim is None:
-        raise ValueError(
-            "no learner checkpoint proprio_dim; hardware adapter must define proprio_dim"
         )
     actor = Actor(
         z_dim,

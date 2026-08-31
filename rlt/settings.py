@@ -119,11 +119,8 @@ def load_config(path: str | Path | None = None, *, task: str | None = None) -> R
     robot_path = Path(
         os.environ.get("RLT_ROBOT_CONFIG") or config_path.with_name("robot.yaml")
     ).expanduser().resolve()
-    if robot_path.is_file():
-        with robot_path.open(encoding="utf-8") as stream:
-            robot_data = yaml.safe_load(stream) or {}
-    else:
-        robot_data = {}
+    with robot_path.open(encoding="utf-8") as stream:
+        robot_data = yaml.safe_load(stream) or {}
     runtime = {**dict(data.get("runtime", {})), **dict(robot_data.get("runtime", {}))}
     hardware = dict(robot_data.get("hardware", {}))
     control_hz = float(runtime.get("control_hz", 10))

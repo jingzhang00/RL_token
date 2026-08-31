@@ -38,7 +38,7 @@ class FeaturePolicy:
                     np.asarray(request["normalized_state"], dtype=np.float32),
                 )
             }
-        observations = request.get("observations", request)
+        observations = request
         result = self.adapter.infer(observations)
         single = isinstance(observations, dict)
         tokens = result["tokens"][None] if single else result["tokens"]
