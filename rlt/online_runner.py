@@ -7,6 +7,7 @@ import json
 import logging
 from pathlib import Path
 import queue
+import re
 import select
 import sys
 import termios
@@ -167,44 +168,106 @@ _HAND_SYNC_NAMES = ("T-pitch", "T-yaw", "Index", "Middle", "Ring", "Pinky")
 # DexHand: 0 = open, 1 = closed.
 _HAND_SYNC_ARROW_PAIRS = (("O", "C"),) * 6
 _ANSI_RESET = "\033[0m"
+_ANSI_BOLD = "\033[1m"
 _ANSI_ARROW_COLORS = ("\033[32m", "\033[33m", "\033[31m")
+_ANSI_ESCAPE_RE = re.compile(r"\033\[[0-9;]*m")
+_SYNC_CARD_WIDTH = 70
 
 
-def _format_sync_table(arm_error_deg, arm_threshold_deg, hand_error, hand_threshold) -> str:
-    def format_cells(errors, threshold, arrow_pairs, precision):
-        values, arrows, statuses = [], [], []
-        for (negative, positive), error in zip(arrow_pairs, errors):
-            error = float(error)
-            direction = positive if error > 0 else negative if error < 0 else "·"
-            magnitude = abs(error)
-            color = _ANSI_ARROW_COLORS[
-                min(
-                    2,
-                    int(magnitude > threshold / 2) + int(magnitude > threshold),
-                )
-            ]
-            unit = "°" if precision == 1 else ""
-            values.append(f"{error:+.{precision}f}{unit}".center(8))
-            arrows.append(" " * 3 + color + direction + _ANSI_RESET + " " * 4)
-            statuses.append(("OK" if magnitude <= threshold else "NOT").center(8))
-        return values, arrows, statuses
+def _visible_len(value: str) -> int:
+    return len(_ANSI_ESCAPE_RE.sub("", value))
 
-    arm_values, arm_arrows, arm_statuses = format_cells(
-        arm_error_deg, arm_threshold_deg, _ARM_SYNC_ARROW_PAIRS, 1
+
+def _sync_card_line(value: str = "") -> str:
+    return (
+        "║ "
+        + value
+        + " " * max(0, _SYNC_CARD_WIDTH - _visible_len(value))
+        + " ║"
     )
-    hand_values, hand_arrows, hand_statuses = format_cells(
-        hand_error, hand_threshold, _HAND_SYNC_ARROW_PAIRS, 2
+
+
+def _sync_cell(name, error, threshold, arrow_pair, precision) -> str:
+    error = float(error)
+    threshold = float(threshold)
+    if threshold <= 0:
+        raise ValueError("sync threshold must be positive")
+    magnitude = abs(error)
+    direction = arrow_pair[1] if error > 0 else arrow_pair[0] if error < 0 else "·"
+    ratio = magnitude / threshold
+    color = _ANSI_ARROW_COLORS[min(2, int(ratio > 0.5) + int(ratio > 1))]
+    status = "MATCH" if ratio <= 0.5 else "NEAR" if ratio <= 1 else "MOVE"
+    filled = min(10, int(round(ratio * 10)))
+    bar = "█" * filled + "░" * (10 - filled)
+    unit = "°" if precision == 1 else ""
+    value = f"{error:+.{precision}f}{unit}".rjust(7)
+    return (
+        f"{name:<7} {color}{value}{_ANSI_RESET} "
+        f"{color}{direction}{_ANSI_RESET} "
+        f"{color}{bar}{_ANSI_RESET} "
+        f"{color}{status:<5}{_ANSI_RESET}"
     )
-    columns = " ".join(f"J{i}".center(8) for i in range(1, 7))
-    hand_columns = " ".join(name.center(8) for name in _HAND_SYNC_NAMES)
-    return "\n".join(
-        [
-            "       " + columns + " | " + hand_columns,
-            "offset " + " ".join(arm_values) + " | " + " ".join(hand_values),
-            "arrow  " + " ".join(arm_arrows) + " | " + " ".join(hand_arrows),
-            "status " + " ".join(arm_statuses) + " | " + " ".join(hand_statuses),
-        ]
+
+
+def _format_sync_table(
+    arm_error_deg,
+    arm_threshold_deg,
+    hand_error,
+    hand_threshold,
+    stable_frames: int = 0,
+    required_frames: int = 3,
+) -> str:
+    arm_error_deg = [float(value) for value in arm_error_deg]
+    hand_error = [float(value) for value in hand_error]
+    arm_threshold_deg = float(arm_threshold_deg)
+    hand_threshold = float(hand_threshold)
+    arm_cells = [
+        _sync_cell(f"J{i}", error, arm_threshold_deg, arrows, 1)
+        for i, (error, arrows) in enumerate(
+            zip(arm_error_deg, _ARM_SYNC_ARROW_PAIRS), 1
+        )
+    ]
+    hand_cells = [
+        _sync_cell(name, error, hand_threshold, arrows, 2)
+        for name, error, arrows in zip(
+            _HAND_SYNC_NAMES, hand_error, _HAND_SYNC_ARROW_PAIRS
+        )
+    ]
+    in_range = sum(
+        abs(error) <= threshold
+        for error, threshold in zip(
+            arm_error_deg + hand_error,
+            [arm_threshold_deg] * 6 + [hand_threshold] * 6,
+        )
     )
+    required_frames = max(1, int(required_frames))
+    stable_frames = min(required_frames, max(0, int(stable_frames)))
+    summary = (
+        f"{_ANSI_BOLD}ROBOT HOLDING POSE  ·  MOVE TO MATCH  ·  "
+        f"IN RANGE {in_range}/12  ·  STABLE {stable_frames}/{required_frames}"
+        f"{_ANSI_RESET}"
+    )
+    lines = [
+        "╔" + "═" * _SYNC_CARD_WIDTH + "╗",
+        _sync_card_line(
+            f"{_ANSI_BOLD}{_ANSI_ARROW_COLORS[1]}"
+            "HUMAN TAKEOVER  ·  SYNCING"
+            f"{_ANSI_RESET}"
+        ),
+        _sync_card_line(summary),
+        "╠" + "═" * _SYNC_CARD_WIDTH + "╣",
+        _sync_card_line(f"{_ANSI_BOLD}ARM{_ANSI_RESET}"),
+        _sync_card_line(f"{arm_cells[0]}  {arm_cells[1]}"),
+        _sync_card_line(f"{arm_cells[2]}  {arm_cells[3]}"),
+        _sync_card_line(f"{arm_cells[4]}  {arm_cells[5]}"),
+        "╟" + "─" * _SYNC_CARD_WIDTH + "╢",
+        _sync_card_line(f"{_ANSI_BOLD}HAND{_ANSI_RESET}"),
+        _sync_card_line(f"{hand_cells[0]}  {hand_cells[1]}"),
+        _sync_card_line(f"{hand_cells[2]}  {hand_cells[3]}"),
+        _sync_card_line(f"{hand_cells[4]}  {hand_cells[5]}"),
+        "╚" + "═" * _SYNC_CARD_WIDTH + "╝",
+    ]
+    return "\n".join(lines)
 
 
 def _confirm_offline_warmup() -> bool:
@@ -336,6 +399,8 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     human_hold_state = None
     human_sync_next_report = 0.0
     human_sync_reported = False
+    human_sync_display_lines = 0
+    human_sync_stable_frames = 0
     aborted = False
     ticks = []
     previous = None
@@ -357,6 +422,14 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     )
     human_timeout_remaining = None
     period = 1.0 / args.control_hz
+
+    def clear_human_sync_display():
+        nonlocal human_sync_reported, human_sync_display_lines
+        if human_sync_reported and sys.stdout.isatty():
+            print(f"\033[{human_sync_display_lines}F\033[J", end="")
+        human_sync_reported = False
+        human_sync_display_lines = 0
+
     hardware.start_human_episode(hardware.read()[1])
     if warmup:
         controls = "Enter=end episode, s/f=success/failure, q=abort"
@@ -395,7 +468,9 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     human = False
                     human_syncing = False
                     human_hold_state = None
+                    clear_human_sync_display()
                     human_sync_next_report = 0.0
+                    human_sync_stable_frames = 0
                     human_timeout_remaining = None
                     deadline = time.monotonic() + timeout if critical else None
                     actor_chunk = None
@@ -411,7 +486,9 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         human = False
                         human_syncing = False
                         human_hold_state = None
+                        clear_human_sync_display()
                         human_sync_next_report = 0.0
+                        human_sync_stable_frames = 0
                     elif phase == "critical-only":
                         critical = True
                         deadline = time.monotonic() + timeout
@@ -419,7 +496,9 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         human = False
                         human_syncing = False
                         human_hold_state = None
+                        clear_human_sync_display()
                         human_sync_next_report = 0.0
+                        human_sync_stable_frames = 0
                         critical = False
                         human_timeout_remaining = None
                         deadline = None
@@ -436,9 +515,10 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         deadline = None
                     human_syncing = True
                     human_sync_next_report = 0.0
-                    human_sync_reported = False
+                    clear_human_sync_display()
+                    human_sync_stable_frames = 0
                     hardware.begin_human_sync()
-                    print("Human takeover syncing; match the robot pose.")
+                    print("Human syncing: match the robot pose.")
                 actor_chunk = None
                 actor_absolute_chunk = None
                 actor_offset = args.chunk_len
@@ -450,32 +530,43 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                 image, state = hardware.read()
                 previous = state.copy()
                 try:
-                    if hardware.human_sync_ready(state):
-                        sync_ready = True
-                    else:
-                        sync_ready = False
+                    sync_ready = hardware.human_sync_ready(state)
+                    target = np.asarray(
+                        hardware.human_sync_target(), dtype=np.float32
+                    )
+                    if target.shape != state.shape:
+                        raise RuntimeError("invalid human sync target shape")
+                    arm_threshold_deg = getattr(
+                        args, "human_sync_arm_threshold_deg", 8.0
+                    )
+                    hand_threshold = getattr(
+                        args, "human_sync_hand_threshold", 0.1
+                    )
+                    arm_error_deg = np.rad2deg(target[:6] - state[:6])
+                    hand_error = target[6:] - state[6:]
+                    in_range = np.all(
+                        np.abs(arm_error_deg) <= arm_threshold_deg
+                    ) and np.all(np.abs(hand_error) <= hand_threshold)
+                    human_sync_stable_frames = (
+                        human_sync_stable_frames + 1 if in_range else 0
+                    )
                     now = time.monotonic()
                     if now >= human_sync_next_report:
-                        target = np.asarray(
-                            hardware.human_sync_target(), dtype=np.float32
+                        clear_human_sync_display()
+                        display = _format_sync_table(
+                            arm_error_deg,
+                            arm_threshold_deg,
+                            hand_error,
+                            hand_threshold,
+                            human_sync_stable_frames,
+                            getattr(args, "human_sync_frames", 3),
                         )
-                        if target.shape != state.shape:
-                            raise RuntimeError("invalid human sync target shape")
-                        if human_sync_reported and sys.stdout.isatty():
-                            print("\033[5F\033[J", end="")
-                        print(
-                            "Human syncing: ⏳⏳⏳\n"
-                            + _format_sync_table(
-                                np.rad2deg(target[:6] - state[:6]),
-                                getattr(args, "human_sync_arm_threshold_deg", 8.0),
-                                target[6:] - state[6:],
-                                getattr(args, "human_sync_hand_threshold", 0.1),
-                            ),
-                            flush=True,
-                        )
+                        print(display, flush=True)
                         human_sync_reported = True
-                        human_sync_next_report = now + 1.0
+                        human_sync_display_lines = len(display.splitlines())
+                        human_sync_next_report = now + 0.2
                     if sync_ready:
+                        clear_human_sync_display()
                         hardware.rebase_human(state)
                         human_syncing = False
                         human_hold_state = None
@@ -487,7 +578,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                                 else timeout
                             )
                         human_timeout_remaining = None
-                        print("Human control activate ✅✅✅\n")
+                        print("\033[1;32m✅✅✅  Human control active  ✅✅✅\033[0m\n")
                     else:
                         hardware.send(
                             human_hold_state if human_hold_state is not None else state

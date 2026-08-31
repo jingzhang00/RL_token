@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from types import SimpleNamespace
 
@@ -29,13 +30,13 @@ def test_sync_error_uses_joint_direction_arrows():
         [0.1, 0.0, 0.1, 0.0, 0.3, 0.0],
         0.2,
     )
-    plain = table.replace("\033[32m", "").replace("\033[33m", "").replace("\033[31m", "").replace("\033[0m", "")
-    assert [line.rstrip() for line in plain.splitlines()] == [
-        "          J1       J2       J3       J4       J5       J6    | T-pitch   T-yaw    Index    Middle    Ring    Pinky",
-        "offset  +1.3°    +2.0°    -2.3°    -10.7°   +2.3°    +1.1°   |  +0.10    +0.00    +0.10    +0.00    +0.30    +0.00",
-        "arrow     →        ↑        ↓        ↺        ↑        ↻     |    C        ·        C        ·        C        ·",
-        "status    OK       OK       OK      NOT       OK       OK    |    OK       OK       OK       OK      NOT       OK",
-    ]
+    plain = re.sub(r"\033\[[0-9;]*m", "", table)
+    assert "HUMAN TAKEOVER  ·  SYNCING" in plain
+    assert "IN RANGE 10/12  ·  STABLE 0/3" in plain
+    assert "J1" in plain and "+1.3°" in plain and "→" in plain
+    assert "J4" in plain and "-10.7°" in plain and "MOVE" in plain
+    assert "T-pitch" in plain and "Ring" in plain
+    assert "█" in plain and "░" in plain
     assert "\033[32m→\033[0m" in table
     assert "\033[31m↺\033[0m" in table
     assert "\033[31mC\033[0m" in table
@@ -587,8 +588,9 @@ def test_human_sync_rebases_and_prompts_without_confirmation(monkeypatch, capsys
     assert not np.array_equal(hardware.sent[1], np.ones(12, np.float32))
     output = capsys.readouterr().out
     assert "Human syncing:" in output
-    assert "offset" in output
-    assert "|" in output
+    assert "IN RANGE" in output
+    assert "STABLE" in output
+    assert "╔" in output and "╚" in output
     assert "T-pitch" in output
     assert "Ring" in output
     assert "Human control activ" in output
