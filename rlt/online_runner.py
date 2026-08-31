@@ -624,7 +624,6 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
             ticks.append(
                 {
                     "z": z,
-                    "reference": reference_chunk[0],
                     "reference_chunk": reference_chunk,
                     "action": executed_normalized,
                     "proprio": proprio,

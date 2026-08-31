@@ -209,14 +209,10 @@ def _reference_for(
 ) -> np.ndarray:
     if tick["source"] == "human":
         return action.copy()
-    value = np.asarray(
-        tick.get("reference_chunk", tick["reference"]), dtype=np.float32
-    )
-    if value.shape == action.shape:
-        return value.copy()
-    if value.ndim == 2 and value.shape[1] == action.shape[1] and value.shape[0] >= horizon:
-        return value[:horizon].copy()
-    return np.stack([tick["reference"] for _ in range(horizon)]).astype(np.float32)
+    value = np.asarray(tick["reference_chunk"], dtype=np.float32)
+    if value.ndim != 2 or value.shape[0] < horizon or value.shape[1] != action.shape[1]:
+        raise ValueError("tick reference_chunk has an incompatible shape")
+    return value[:horizon].copy()
 
 
 def build_transitions(

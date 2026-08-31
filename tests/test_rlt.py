@@ -219,7 +219,6 @@ def test_transitions_do_not_cross_source_segments():
             ticks.append(
                 {
                     "z": np.full(8, value),
-                    "reference": np.full(3, value),
                     "action": np.full(3, 10 + value),
                     "reference_chunk": np.full((4, 3), value),
                     "proprio": np.full(4, value),
@@ -232,6 +231,22 @@ def test_transitions_do_not_cross_source_segments():
     assert [row.source for row in rows] == ["actor", "actor", "human", "human"]
     assert all(not row.done for row in rows)
     assert np.array_equal(rows[2].reference, rows[2].action)
+
+
+def test_transitions_require_current_reference_chunk_format():
+    ticks = [
+        {
+            "z": np.zeros(8),
+            "reference": np.zeros(3),
+            "action": np.zeros(3),
+            "proprio": np.zeros(4),
+            "source": "actor",
+            "done": True,
+            "reward": 0.0,
+        }
+    ]
+    with pytest.raises(KeyError):
+        build_transitions(ticks, horizon=1, stride=1)
 
 
 def test_online_update_counters_are_separate():
@@ -612,7 +627,6 @@ def test_stride_terminal_human_reference_and_proprio():
         ticks.append(
             {
                 "z": np.full(8, index),
-                "reference": np.full(3, index),
                 "action": np.full(3, 10 + index),
                 "reference_chunk": np.full((3, 3), index),
                 "proprio": np.full(4, index),
