@@ -285,13 +285,14 @@ class SyncDashboard:
     AMBER = (244, 178, 72)
     RED = (244, 91, 91)
 
-    def __init__(self, urdf_path: str | Path, width: int = 1600, height: int = 850):
+    def __init__(self, urdf_path: str | Path, width: int = 1200, height: int = 700):
         self.kinematics = UrdfKinematics(urdf_path)
         self.width, self.height = int(width), int(height)
         self._bounds: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._pygame = None
         self._surface = None
         self._screen = None
+        self._window = None
         self._fonts: dict[tuple[int, bool], object] = {}
         self._closed = False
         self._previous_focus = None
@@ -320,21 +321,24 @@ class SyncDashboard:
         """Open the Pygame window; called lazily when human sync starts."""
         pygame = self._pg()
         self._previous_focus = _x11_focus_window()
-        if not pygame.display.get_init():
-            pygame.display.init()
-        self._screen = pygame.display.set_mode(
-            (self.width, self.height), pygame.RESIZABLE
+        self._window = pygame.Window(
+            "ALIGN POSE",
+            size=(self.width, self.height),
+            resizable=True,
+            input_focus=True,
+            mouse_focus=True,
         )
-        pygame.display.set_caption("D1  /  ALIGN POSE")
+        self._screen = self._window.get_surface()
         self._closed = False
         self._ensure_surface().fill(self.BG)
-        self._header(self._surface)
-        from pygame._sdl2 import Window
-
-        Window.from_display_module().focus()
+        self._window.focus()
         self.present()
 
     def stop(self) -> None:
+        window = getattr(self, "_window", None)
+        if window is not None:
+            window.destroy()
+            self._window = None
         if self._pygame is not None and self._pygame.display.get_init():
             self._pygame.display.quit()
         self._screen = None
@@ -651,7 +655,7 @@ class SyncDashboard:
                     self._direction_label(
                         surface,
                         center,
-                        f"J{joint_index + 1}  {direction}  {abs(error_value):.1f}°",
+                        f"{direction}  {abs(error_value):.1f}°",
                         color,
                         plot,
                     )
@@ -675,7 +679,7 @@ class SyncDashboard:
         state = np.asarray(state, dtype=np.float32).reshape(6)
         # Use one scale for both axes.  Independent width/height factors make
         # the hand look unnaturally stretched in the tall right-hand panel.
-        scale = min(width, height) * 0.64
+        scale = min(width, height) * 0.5
         center = np.asarray((x + width * 0.39, y + height * 0.57), dtype=np.float32)
         tilt = 0.10
         rotation = np.asarray(
@@ -792,13 +796,13 @@ class SyncDashboard:
                 self._direction_label(
                     surface,
                     anchor,
-                    f"{label.upper()}  {direction}  {error:+.2f}",
+                    direction,
                     color,
                     plot,
                 )
                 pygame.draw.circle(surface, color, anchor, 8, 2)
         thumb_anchor = tuple(np.round(current["Thumb"][1]).astype(int))
-        for channel, label in ((0, "T-PITCH"), (1, "T-YAW")):
+        for channel in (0, 1):
             error = float(hand_error[channel])
             good = abs(error) <= float(threshold)
             color = self.GREEN if good else self._color(error, threshold)
@@ -819,7 +823,7 @@ class SyncDashboard:
                 self._direction_label(
                     surface,
                     anchor,
-                    f"{label}  {direction}  {error:+.2f}",
+                    direction,
                     color,
                     plot,
                 )
@@ -862,16 +866,6 @@ class SyncDashboard:
         self._text(surface, "HOLD", (hold_x + 31, y + 19), self.WHITE, 14, True)
         self._text(surface, status, (hold_x + 190, y + 19), status_color, 14, True, "right")
 
-    def _header(self, surface) -> None:
-        pygame = self._pg()
-        self._text(surface, "ALIGN POSE", (24, 17), self.WHITE, 25, True)
-        self._text(surface, "HUMAN CONTROL  /  POSITION SYNC", (25, 46), self.MUTED, 11, True)
-        right = self.width - 24
-        pygame.draw.circle(surface, self.GREEN, (right - 184, 31), 5)
-        self._text(surface, "ROBOT CONNECTED", (right, 22), self.GREEN, 14, True, "right")
-        self._text(surface, "TARGET GLOVE  ·  ERRORS ONLY", (right, 45), self.GLOVE, 10, align="right")
-        pygame.draw.line(surface, self.BORDER, (18, 70), (self.width - 18, 70), 1)
-
     def render(
         self,
         current_state: np.ndarray,
@@ -890,23 +884,23 @@ class SyncDashboard:
         arm_error_deg = np.asarray(arm_error_deg, dtype=np.float32).reshape(6)
         hand_error = np.asarray(hand_error, dtype=np.float32).reshape(6)
         surface.fill(self.BG)
-        self._header(surface)
 
         margin = 18
-        content_y = 84
+        gutter = 10
+        content_y = margin
         content_bottom = self.height - 102
         content_height = max(content_bottom - content_y, 1)
-        left_width = int(self.width * 0.60)
+        left_width = int(self.width * 0.72)
         arm_rect = (margin, content_y, left_width - margin * 2, content_height)
+        hand_x = left_width - margin + gutter
         hand_rect = (
-            left_width + margin // 2,
+            hand_x,
             content_y,
-            self.width - left_width - margin * 2,
+            self.width - margin - hand_x,
             content_height,
         )
         inner_x, inner_y, inner_width, inner_height = arm_rect
         front_width = int(inner_width * 0.69)
-        gutter = 10
         mini_width = inner_width - front_width - gutter
         mini_height = (inner_height - gutter) // 2
         self._arm_view(
@@ -979,7 +973,10 @@ class SyncDashboard:
         else:
             scaled = pygame.transform.smoothscale(self._surface, self._screen.get_size())
             self._screen.blit(scaled, (0, 0))
-        pygame.display.flip()
+        if self._window is not None:
+            self._window.flip()
+        else:
+            pygame.display.flip()
 
 
 if __name__ == "__main__":
