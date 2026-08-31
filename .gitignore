@@ -7,3 +7,4 @@ models/
 *.sqlite-shm
 *.sqlite-wal
 wandb/
+tests/

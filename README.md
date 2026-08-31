@@ -9,6 +9,7 @@ finetune the D1 VLA, train the RL token, and run online actor-critic training.
 cd RL_token/
 GIT_LFS_SKIP_SMUDGE=1 UV_PROJECT_ENVIRONMENT="$PWD/.venv" uv sync --project "$PWD/openpi"
 GIT_LFS_SKIP_SMUDGE=1 uv pip install --python "$PWD/.venv/bin/python" -e "$PWD/openpi"
+uv pip install --python "$PWD/.venv/bin/python" "pin==2.7.0" pygame-ce
 export PYTHONPATH="$PWD:$PWD/openpi/src:$PWD/openpi/packages/openpi-client/src"
 ```
 

@@ -65,6 +65,9 @@ class D1Hardware:
         self._camera_lock = threading.Lock()
         self._latest_bgr = None
         self._camera_error = None
+        self._sync_dashboard = None
+        self._sync_dashboard_active = False
+        self.urdf_path = None
         self.initial_state = _load_initial_state(args.initial_state_file)
         self.exo = self.glove = None
         self.exo_zero = self.takeover_arm = self.glove_zero = self.takeover_hand = None
@@ -76,8 +79,9 @@ class D1Hardware:
         from beingbeyond_d1_edu_sdk.urdf_path import get_default_urdf_path
         from robots.d1.d1_robot import D1Robot
 
+        self.urdf_path = Path(get_default_urdf_path())
         self.robot = D1Robot(
-            urdf_path=get_default_urdf_path(),
+            urdf_path=str(self.urdf_path),
             arm_dev=self.args.arm_dev,
             arm_baud=self.args.arm_baud,
             hand_type=self.args.hand_type,
@@ -194,6 +198,43 @@ class D1Hardware:
     def begin_human_sync(self):
         self._human_sync_count = 0
 
+    def start_human_sync_view(self):
+        if self._sync_dashboard is None:
+            from rlt.sync_dashboard import SyncDashboard
+
+            self._sync_dashboard = SyncDashboard(self.urdf_path)
+        self._sync_dashboard.start()
+        self._sync_dashboard_active = True
+
+    def update_human_sync_view(
+        self,
+        state,
+        target,
+        arm_error_deg,
+        hand_error,
+        arm_threshold_deg,
+        hand_threshold,
+        stable_frames,
+        required_frames,
+    ):
+        if self._sync_dashboard is None or not self._sync_dashboard_active:
+            return
+        self._sync_dashboard.render(
+            state,
+            target,
+            arm_error_deg,
+            hand_error,
+            arm_threshold_deg,
+            hand_threshold,
+            stable_frames,
+            required_frames,
+        )
+
+    def stop_human_sync_view(self):
+        self._sync_dashboard_active = False
+        if self._sync_dashboard is not None:
+            self._sync_dashboard.stop()
+
     def human_sync_ready(self, state):
         if self.human_origin_robot is None:
             raise RuntimeError("human episode origin is not initialized")
@@ -211,22 +252,18 @@ class D1Hardware:
         )
         self._human_sync_target = target.copy()
         arm_threshold = np.deg2rad(
-            float(getattr(self.args, "human_sync_arm_threshold_deg", 8.0))
+            float(self.args.human_sync_arm_threshold_deg)
         )
-        hand_threshold = float(
-            getattr(self.args, "human_sync_hand_threshold", 0.1)
-        )
+        hand_threshold = float(self.args.human_sync_hand_threshold)
         ready = (
             np.all(np.abs(target[:6] - state[:6]) <= arm_threshold)
             and np.all(np.abs(target[6:] - state[6:]) <= hand_threshold)
         )
         self._human_sync_count = self._human_sync_count + 1 if ready else 0
-        return self._human_sync_count >= int(
-            getattr(self.args, "human_sync_frames", 3)
-        )
+        return self._human_sync_count >= int(self.args.human_sync_frames)
 
     def human_sync_target(self):
-        return None if self._human_sync_target is None else self._human_sync_target.copy()
+        return self._human_sync_target.copy()
 
     def human_target(self):
         frame = self.exo.read_frame()
@@ -241,7 +278,7 @@ class D1Hardware:
         )
         arm_delta = np.deg2rad(angles - self.exo_zero)
         arm_deadband = np.deg2rad(
-            float(getattr(self.args, "human_deadband_arm_deg", 1.0))
+            float(self.args.human_deadband_arm_deg)
         )
         arm_delta[np.abs(arm_delta) < arm_deadband] = 0
         arm = np.clip(
@@ -252,7 +289,7 @@ class D1Hardware:
         hand_delta = (
             np.asarray(self.glove.get_norm_values(), np.float32) - self.glove_zero
         )
-        hand_deadband = float(getattr(self.args, "human_deadband_hand", 0.02))
+        hand_deadband = float(self.args.human_deadband_hand)
         hand_delta[np.abs(hand_delta) < hand_deadband] = 0
         hand = np.clip(
             self.takeover_hand + hand_delta,
@@ -317,11 +354,13 @@ class D1Hardware:
                     obj.close()
 
     def stop_camera_thread(self):
+        self.stop_human_sync_view()
         self._camera_active.clear()
         self._camera_ready.clear()
         self._camera_paused.wait(2.0)
 
     def close_camera_thread(self):
+        self.stop_human_sync_view()
         self._camera_stop.set()
         self._camera_active.set()
         if self._camera_thread is not None and self._camera_thread.is_alive():
