@@ -163,27 +163,46 @@ _ARM_SYNC_ARROW_PAIRS = (
     ("↓", "↑"),  # joint 5: down / up
     ("↺", "↻"),  # joint 6: counter-clockwise / clockwise
 )
+_HAND_SYNC_NAMES = ("T-pitch", "T-yaw", "Index", "Middle", "Ring", "Pinky")
+# DexHand: 0 = open, 1 = closed.
+_HAND_SYNC_ARROW_PAIRS = (("O", "C"),) * 6
 _ANSI_RESET = "\033[0m"
 _ANSI_ARROW_COLORS = ("\033[32m", "\033[33m", "\033[31m")
 
 
-def _format_sync_table(error_deg, threshold_deg) -> str:
-    values, arrows, statuses = [], [], []
-    for (negative, positive), error in zip(_ARM_SYNC_ARROW_PAIRS, error_deg):
-        error = float(error)
-        direction = positive if error > 0 else negative if error < 0 else "·"
-        magnitude = abs(error)
-        color = _ANSI_ARROW_COLORS[min(2, int(magnitude > threshold_deg / 2) + int(magnitude > threshold_deg))]
-        values.append(f"{error:+.1f}°".center(8))
-        arrows.append(" " * 3 + color + direction + _ANSI_RESET + " " * 4)
-        statuses.append(("OK" if magnitude <= threshold_deg else "NOT").center(8))
+def _format_sync_table(arm_error_deg, arm_threshold_deg, hand_error, hand_threshold) -> str:
+    def format_cells(errors, threshold, arrow_pairs, precision):
+        values, arrows, statuses = [], [], []
+        for (negative, positive), error in zip(arrow_pairs, errors):
+            error = float(error)
+            direction = positive if error > 0 else negative if error < 0 else "·"
+            magnitude = abs(error)
+            color = _ANSI_ARROW_COLORS[
+                min(
+                    2,
+                    int(magnitude > threshold / 2) + int(magnitude > threshold),
+                )
+            ]
+            unit = "°" if precision == 1 else ""
+            values.append(f"{error:+.{precision}f}{unit}".center(8))
+            arrows.append(" " * 3 + color + direction + _ANSI_RESET + " " * 4)
+            statuses.append(("OK" if magnitude <= threshold else "NOT").center(8))
+        return values, arrows, statuses
+
+    arm_values, arm_arrows, arm_statuses = format_cells(
+        arm_error_deg, arm_threshold_deg, _ARM_SYNC_ARROW_PAIRS, 1
+    )
+    hand_values, hand_arrows, hand_statuses = format_cells(
+        hand_error, hand_threshold, _HAND_SYNC_ARROW_PAIRS, 2
+    )
     columns = " ".join(f"J{i}".center(8) for i in range(1, 7))
+    hand_columns = " ".join(name.center(8) for name in _HAND_SYNC_NAMES)
     return "\n".join(
         [
-            "       " + columns,
-            "value  " + " ".join(values),
-            "arrow  " + " ".join(arrows),
-            "status " + " ".join(statuses),
+            "       " + columns + " | " + hand_columns,
+            "offset " + " ".join(arm_values) + " | " + " ".join(hand_values),
+            "arrow  " + " ".join(arm_arrows) + " | " + " ".join(hand_arrows),
+            "status " + " ".join(arm_statuses) + " | " + " ".join(hand_statuses),
         ]
     )
 
@@ -342,6 +361,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     human_syncing = False
     human_hold_state = None
     human_sync_next_report = 0.0
+    human_sync_reported = False
     aborted = False
     ticks = []
     previous = None
@@ -363,11 +383,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
     )
     human_timeout_remaining = None
     period = 1.0 / args.control_hz
-    start_human_episode = getattr(hardware, "start_human_episode", None)
-    if callable(start_human_episode):
-        start_human_episode(hardware.read()[1])
-    elif phase == "critical-only":
-        hardware.rebase_human(hardware.read()[1])
+    hardware.start_human_episode(hardware.read()[1])
     if warmup:
         controls = "Enter=end episode, s/f=success/failure, q=abort"
     elif phase == "critical-only":
@@ -437,27 +453,18 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     human = True
                     if phase in {"critical-only", "full-task"} and not critical:
                         critical = True
-                    if callable(getattr(hardware, "human_sync_ready", None)):
-                        human_hold_state = hardware.read()[1].copy()
-                        hardware.send(human_hold_state)
-                        if deadline is not None:
-                            human_timeout_remaining = max(
-                                0.0, deadline - time.monotonic()
-                            )
-                            deadline = None
-                        human_syncing = True
-                        human_sync_next_report = 0.0
-                        begin_human_sync = getattr(hardware, "begin_human_sync", None)
-                        if callable(begin_human_sync):
-                            begin_human_sync()
-                        print("Human takeover syncing; match the robot pose.")
-                    else:
-                        hardware.rebase_human(
-                            previous if previous is not None else hardware.read()[1]
+                    human_hold_state = hardware.read()[1].copy()
+                    hardware.send(human_hold_state)
+                    if deadline is not None:
+                        human_timeout_remaining = max(
+                            0.0, deadline - time.monotonic()
                         )
-                        if critical and deadline is None:
-                            deadline = time.monotonic() + timeout
-                        print("Human control active.")
+                        deadline = None
+                    human_syncing = True
+                    human_sync_next_report = 0.0
+                    human_sync_reported = False
+                    hardware.begin_human_sync()
+                    print("Human takeover syncing; match the robot pose.")
                 actor_chunk = None
                 actor_absolute_chunk = None
                 actor_offset = args.chunk_len
@@ -475,24 +482,25 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         sync_ready = False
                     now = time.monotonic()
                     if now >= human_sync_next_report:
-                        target_reader = getattr(hardware, "human_sync_target", None)
-                        target = target_reader() if callable(target_reader) else None
-                        if target is not None:
-                            target = np.asarray(target, dtype=np.float32)
-                            if target.shape == state.shape:
-                                print(
-                                    "=========    Human syncing:   =========\n"
-                                    + _format_sync_table(
-                                        np.rad2deg(target[:6] - state[:6]),
-                                        getattr(args, "human_sync_arm_threshold_deg", 8.0),
-                                    )
-                                    + "\n "
-                                    f"arm={_format_pose(np.rad2deg(target[:6]))}\n "
-                                    f"robot={_format_pose(np.rad2deg(state[:6]))}\n "
-                                    f"glove={_format_pose(target[6:])}\n "
-                                    f"hand={_format_pose(state[6:])}\n"
-                                )
-                        human_sync_next_report = now + 2.0
+                        target = np.asarray(
+                            hardware.human_sync_target(), dtype=np.float32
+                        )
+                        if target.shape != state.shape:
+                            raise RuntimeError("invalid human sync target shape")
+                        if human_sync_reported and sys.stdout.isatty():
+                            print("\033[5F\033[J", end="")
+                        print(
+                            "Human syncing: ⏳⏳⏳\n"
+                            + _format_sync_table(
+                                np.rad2deg(target[:6] - state[:6]),
+                                getattr(args, "human_sync_arm_threshold_deg", 8.0),
+                                target[6:] - state[6:],
+                                getattr(args, "human_sync_hand_threshold", 0.1),
+                            ),
+                            flush=True,
+                        )
+                        human_sync_reported = True
+                        human_sync_next_report = now + 1.0
                     if sync_ready:
                         hardware.rebase_human(state)
                         human_syncing = False
@@ -505,13 +513,15 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                                 else timeout
                             )
                         human_timeout_remaining = None
-                        print("✅ Human control activate ✅")
+                        print("Human control activate ✅✅✅\n")
                     else:
                         hardware.send(
                             human_hold_state if human_hold_state is not None else state
                         )
                         time.sleep(max(0, period - (time.monotonic() - tick_start)))
                         continue
+                except AttributeError:
+                    raise
                 except Exception:
                     logging.exception("human sync failed; command paused")
                     if human_hold_state is not None:
