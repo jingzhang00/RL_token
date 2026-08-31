@@ -257,9 +257,9 @@ def _format_sync_table(
         _sync_card_line(summary),
         "╠" + "═" * _SYNC_CARD_WIDTH + "╣",
         _sync_card_line(f"{_ANSI_BOLD}ARM{_ANSI_RESET}"),
-        _sync_card_line(f"{arm_cells[0]}  {arm_cells[1]}"),
-        _sync_card_line(f"{arm_cells[2]}  {arm_cells[3]}"),
-        _sync_card_line(f"{arm_cells[4]}  {arm_cells[5]}"),
+        _sync_card_line(f"{arm_cells[0]}  {arm_cells[3]}"),
+        _sync_card_line(f"{arm_cells[1]}  {arm_cells[4]}"),
+        _sync_card_line(f"{arm_cells[2]}  {arm_cells[5]}"),
         "╟" + "─" * _SYNC_CARD_WIDTH + "╢",
         _sync_card_line(f"{_ANSI_BOLD}HAND{_ANSI_RESET}"),
         _sync_card_line(f"{hand_cells[0]}  {hand_cells[1]}"),
@@ -518,7 +518,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     clear_human_sync_display()
                     human_sync_stable_frames = 0
                     hardware.begin_human_sync()
-                    print("Human syncing: match the robot pose.")
+                    print("\033[1;32m⏳⏳⏳  Human syncing  ⏳⏳⏳\033[0m\n")
                 actor_chunk = None
                 actor_absolute_chunk = None
                 actor_offset = args.chunk_len
