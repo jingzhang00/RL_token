@@ -155,6 +155,39 @@ def _format_pose(values) -> str:
     return "[" + " ".join(f"{float(value):.1f}" for value in values) + "]"
 
 
+_ARM_SYNC_ARROW_PAIRS = (
+    ("←", "→"),  # joint 1: left / right
+    ("↓", "↑"),  # joint 2: down / up
+    ("↓", "↑"),  # joint 3: down / up
+    ("↺", "↻"),  # joint 4: counter-clockwise / clockwise
+    ("↓", "↑"),  # joint 5: down / up
+    ("↺", "↻"),  # joint 6: counter-clockwise / clockwise
+)
+_ANSI_RESET = "\033[0m"
+_ANSI_ARROW_COLORS = ("\033[32m", "\033[33m", "\033[31m")
+
+
+def _format_sync_table(error_deg, threshold_deg) -> str:
+    values, arrows, statuses = [], [], []
+    for (negative, positive), error in zip(_ARM_SYNC_ARROW_PAIRS, error_deg):
+        error = float(error)
+        direction = positive if error > 0 else negative if error < 0 else "·"
+        magnitude = abs(error)
+        color = _ANSI_ARROW_COLORS[min(2, int(magnitude > threshold_deg / 2) + int(magnitude > threshold_deg))]
+        values.append(f"{error:+.1f}°".center(8))
+        arrows.append(" " * 3 + color + direction + _ANSI_RESET + " " * 4)
+        statuses.append(("OK" if magnitude <= threshold_deg else "NOT").center(8))
+    columns = " ".join(f"J{i}".center(8) for i in range(1, 7))
+    return "\n".join(
+        [
+            "       " + columns,
+            "value  " + " ".join(values),
+            "arrow  " + " ".join(arrows),
+            "status " + " ".join(statuses),
+        ]
+    )
+
+
 def _confirm_offline_warmup() -> bool:
     while True:
         answer = input(
@@ -406,6 +439,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                         critical = True
                     if callable(getattr(hardware, "human_sync_ready", None)):
                         human_hold_state = hardware.read()[1].copy()
+                        hardware.send(human_hold_state)
                         if deadline is not None:
                             human_timeout_remaining = max(
                                 0.0, deadline - time.monotonic()
@@ -447,7 +481,12 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                             target = np.asarray(target, dtype=np.float32)
                             if target.shape == state.shape:
                                 print(
-                                    "=========    Human syncing:   =========\n "
+                                    "=========    Human syncing:   =========\n"
+                                    + _format_sync_table(
+                                        np.rad2deg(target[:6] - state[:6]),
+                                        getattr(args, "human_sync_arm_threshold_deg", 8.0),
+                                    )
+                                    + "\n "
                                     f"arm={_format_pose(np.rad2deg(target[:6]))}\n "
                                     f"robot={_format_pose(np.rad2deg(state[:6]))}\n "
                                     f"glove={_format_pose(target[6:])}\n "
@@ -466,7 +505,7 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                                 else timeout
                             )
                         human_timeout_remaining = None
-                        print("========Human control activate.========")
+                        print("✅ Human control activate ✅")
                     else:
                         hardware.send(
                             human_hold_state if human_hold_state is not None else state

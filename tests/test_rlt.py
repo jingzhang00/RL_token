@@ -12,6 +12,7 @@ from rlt.online_runner import (
     _confirm_online_rollout,
     _offline_warmup,
     _read_episode_label,
+    _format_sync_table,
     run_episode,
 )
 from rlt.rl_core import Learner, Replay, Transition, build_transitions, make_proprio
@@ -19,6 +20,19 @@ from rlt.actions import absolute_to_normalized, normalized_to_absolute, safe_com
 from rlt.serve_features import FeaturePolicy
 from rlt.settings import load_config
 from robots.d1.online_rl_d1 import D1Hardware
+
+
+def test_sync_error_uses_joint_direction_arrows():
+    table = _format_sync_table([1.3, 2.0, -2.3, -10.7, 2.3, 1.1], 10)
+    plain = table.replace("\033[32m", "").replace("\033[33m", "").replace("\033[31m", "").replace("\033[0m", "")
+    assert [line.rstrip() for line in plain.splitlines()] == [
+        "          J1       J2       J3       J4       J5       J6",
+        "value   +1.3°    +2.0°    -2.3°    -10.7°   +2.3°    +1.1°",
+        "arrow     →        ↑        ↓        ↺        ↑        ↻",
+        "status    OK       OK       OK      NOT       OK       OK",
+    ]
+    assert "\033[32m→\033[0m" in table
+    assert "\033[31m↺\033[0m" in table
 
 
 def test_episode_label_is_collected_after_episode_ends(monkeypatch):
@@ -509,8 +523,9 @@ def test_human_sync_rebases_and_prompts_without_confirmation(monkeypatch, capsys
     assert [tick["source"] for tick in ticks] == ["vla", "human"]
     assert all(tick["critical"] for tick in ticks[1:])
     assert hardware.begins == 1 and hardware.rebases == 1
-    assert len(hardware.sent) == 4
+    assert len(hardware.sent) == 5
     assert np.array_equal(hardware.sent[1], hardware.sent[2])
+    assert np.array_equal(hardware.sent[2], hardware.sent[3])
     assert np.array_equal(hardware.sent[1], np.full(12, 2, np.float32))
     assert not np.array_equal(hardware.sent[1], np.ones(12, np.float32))
     output = capsys.readouterr().out
