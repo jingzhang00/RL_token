@@ -630,6 +630,8 @@ class SyncDashboard:
             pygame.draw.circle(surface, self.GLOVE, tuple(np.round(point).astype(int)), 3, 1)
         for joint_index, error in enumerate(arm_error):
             center = tuple(np.round(current_xy[joint_index + 1]).astype(int))
+            target_center = tuple(np.round(target_xy[joint_index + 1]).astype(int))
+            pygame.draw.line(surface, self.RED, center, target_center, 1)
             error_value = float(error)
             good = abs(error_value) <= float(threshold)
             if good:
@@ -637,8 +639,6 @@ class SyncDashboard:
                 pygame.draw.circle(surface, self.BG, center, 2)
             else:
                 color = self._color(error_value, threshold)
-                target_center = tuple(np.round(target_xy[joint_index + 1]).astype(int))
-                pygame.draw.line(surface, color, center, target_center, 1)
                 pygame.draw.circle(surface, color, center, 8, 2)
                 radius = max(16, min(25, int(min(width, height) * 0.055)))
                 positive = error_value >= 0
@@ -718,12 +718,24 @@ class SyncDashboard:
                 thumb_flex,
             )
         )
+        wrist = np.asarray((scale * 0.02, scale * 0.20), dtype=np.float32)
+        result["Palm"] = transform(
+            np.asarray(
+                [(wrist, base) for base in tuple(bases) + (thumb_base,)],
+                dtype=np.float32,
+            )
+        )
         result["Wrist"] = transform(
-            np.asarray(((scale * 0.02, scale * 0.20), (scale * 0.72, scale * 0.25)))
+            np.asarray((wrist, (scale * 0.72, scale * 0.25)))
         )
         return result
 
     def _hand_skeleton_draw(self, surface, skeleton, color, dashed: bool) -> None:
+        for segment in skeleton["Palm"]:
+            if dashed:
+                self._dashed(surface, segment, color, 1, 5)
+            else:
+                self._line(surface, segment, color, 3)
         for label in ("Index", "Middle", "Ring", "Pinky", "Thumb"):
             points = skeleton[label]
             if dashed:
