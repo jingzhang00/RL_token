@@ -413,6 +413,23 @@ def run_episode(
         if stop is not None:
             stop()
 
+    def record_critical_result():
+        print("\n\033[1;33m  Critical phase result:\033[0m")
+        result = _read_episode_label()
+        if result is not None:
+            terminal = next(
+                (
+                    tick
+                    for tick in reversed(ticks)
+                    if tick.get("critical") and not tick.get("done")
+                ),
+                None,
+            )
+            if terminal is not None:
+                terminal["done"] = True
+                terminal["reward"] = float(result)
+        return result
+
     hardware.start_human_episode(hardware.read()[1])
     mode = "WARMUP" if warmup else "HUMAN TELEOP" if phase == "critical-only" else "BASE VLA"
     limit = f"LIMIT {timeout:g}s" if warmup else f"CRITICAL LIMIT {timeout:g}s"
@@ -449,7 +466,6 @@ def run_episode(
                 break
             if key in {"\r", "\n"}:
                 if ticks:
-                    ticks[-1]["done"] = True
                     break
                 if phase == "critical-only":
                     break
@@ -458,6 +474,13 @@ def run_episode(
             if phase == "critical-only" and critical and key == "h":
                 key = "c"
             if key == "c" and not warmup:
+                if (
+                    phase in {"critical-only", "full-task"}
+                    and critical
+                    and record_critical_result() is None
+                ):
+                    aborted = True
+                    break
                 critical = not critical
                 human = False
                 human_syncing = False
@@ -487,6 +510,13 @@ def run_episode(
                             "\033[1;35m✅✅✅  Human control activated  ✅✅✅\033[0m\n"
                         )
                     elif phase != "critical-only":
+                        if (
+                            phase == "full-task"
+                            and critical
+                            and record_critical_result() is None
+                        ):
+                            aborted = True
+                            break
                         human = False
                         human_syncing = False
                         human_hold_state = None
@@ -707,11 +737,18 @@ def run_episode(
     stop_human_sync_view()
     hardware.stop_camera_thread()
     if ticks and not aborted:
-        ticks[-1]["done"] = True
+        if (
+            phase in {"critical-only", "full-task"}
+            and critical
+            and record_critical_result() is None
+        ):
+            return ticks, False, time.monotonic() - started, True
         success = _read_episode_label()
         if success is None:
             return ticks, False, time.monotonic() - started, True
-        ticks[-1]["reward"] = float(success)
+        if not ticks[-1]["done"]:
+            ticks[-1]["done"] = True
+            ticks[-1]["reward"] = float(success)
         return ticks, success, time.monotonic() - started, aborted
     return ticks, False, time.monotonic() - started, aborted
 

@@ -6,8 +6,8 @@ runtime:
   learner_device: auto
   feature_host: 127.0.0.1
   feature_port: 5556
-  critical_timeout_s: 20
-  full_timeout_s: 30
+  critical_timeout_s: 60
+  full_timeout_s: 60
   human_sync_arm_threshold_deg: 10
   human_sync_hand_threshold: 0.2
   human_sync_frames: 3
