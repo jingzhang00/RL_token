@@ -413,9 +413,22 @@ def run_episode(
         if stop is not None:
             stop()
 
-    def record_critical_result():
-        print("\n\033[1;33m  Critical phase result:\033[0m")
-        result = _read_episode_label()
+    def record_critical_result(keys):
+        prompt = (
+            "\n\033[1;33m  Critical result "
+            "[s]uccess / [f]ailure / [q]uit (no Enter): \033[0m"
+        )
+        print(prompt, end="", flush=True)
+        while True:
+            choice = keys.read()
+            if choice in {"s", "f", "q", "\x03"}:
+                print(choice)
+                break
+            if choice is not None:
+                print("\n\033[31m  Invalid choice. Use s, f, or q.\033[0m")
+                print(prompt, end="", flush=True)
+            time.sleep(0.01)
+        result = True if choice == "s" else False if choice == "f" else None
         if result is not None:
             terminal = next(
                 (
@@ -458,6 +471,13 @@ def run_episode(
         while True:
             now = time.monotonic()
             if deadline is not None and now >= deadline:
+                if (
+                    phase in {"critical-only", "full-task"}
+                    and critical
+                    and ticks
+                    and record_critical_result(keys) is None
+                ):
+                    aborted = True
                 break
             tick_start = time.monotonic()
             key = keys.read()
@@ -466,6 +486,12 @@ def run_episode(
                 break
             if key in {"\r", "\n"}:
                 if ticks:
+                    if (
+                        phase in {"critical-only", "full-task"}
+                        and critical
+                        and record_critical_result(keys) is None
+                    ):
+                        aborted = True
                     break
                 if phase == "critical-only":
                     break
@@ -477,7 +503,7 @@ def run_episode(
                 if (
                     phase in {"critical-only", "full-task"}
                     and critical
-                    and record_critical_result() is None
+                    and record_critical_result(keys) is None
                 ):
                     aborted = True
                     break
@@ -513,7 +539,7 @@ def run_episode(
                         if (
                             phase == "full-task"
                             and critical
-                            and record_critical_result() is None
+                            and record_critical_result(keys) is None
                         ):
                             aborted = True
                             break
@@ -737,12 +763,6 @@ def run_episode(
     stop_human_sync_view()
     hardware.stop_camera_thread()
     if ticks and not aborted:
-        if (
-            phase in {"critical-only", "full-task"}
-            and critical
-            and record_critical_result() is None
-        ):
-            return ticks, False, time.monotonic() - started, True
         success = _read_episode_label()
         if success is None:
             return ticks, False, time.monotonic() - started, True
