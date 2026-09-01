@@ -176,13 +176,17 @@ def _confirm_online_rollout() -> bool:
         print("\033[31m  Invalid choice. Use y or n.\033[0m")
 
 
-def _prepare_episode(hardware, phase: str, episode: int, first: bool) -> None:
+def _prepare_episode(
+    hardware, phase: str, episode: int, first: bool, load_model=None
+) -> None:
     if first:
         input("\033[1;33m  Press Enter to begin homing: \033[0m")
     else:
         input("\033[1;33m  Press Enter to begin homing: \033[0m")
     hardware.move_to_initial_pose()
     hardware.start_camera_thread()
+    if first and load_model is not None:
+        load_model()
     if first:
         input(
             f"\033[1;32m  ✓ Initial pose reached.\033[0m "
@@ -410,17 +414,6 @@ def run_episode(
             stop()
 
     hardware.start_human_episode(hardware.read()[1])
-    if phase == "critical-only":
-        print("\033[1;33m  Loading model...\033[0m")
-        image, state = hardware.read()
-        feature.infer(
-            {
-                "observation/image": image,
-                "observation/state": state,
-                "prompt": args.prompt,
-            }
-        )
-        print("\033[1;32m  ✓ Model ready.\033[0m")
     mode = "WARMUP" if warmup else "HUMAN TELEOP" if phase == "critical-only" else "BASE VLA"
     limit = f"LIMIT {timeout:g}s" if warmup else f"CRITICAL LIMIT {timeout:g}s"
     yellow, red, green, magenta = "\033[1;33m", "\033[1;31m", "\033[1;32m", "\033[1;35m"
@@ -955,6 +948,18 @@ def run(args, hardware_cls) -> None:
         with (
             hardware_cls(args) as hardware,
         ):
+            def load_model():
+                print("\033[1;33m  Loading model...\033[0m")
+                image, state = hardware.read()
+                feature.infer(
+                    {
+                        "observation/image": image,
+                        "observation/state": state,
+                        "prompt": args.prompt,
+                    }
+                )
+                print("\033[1;32m  ✓ Model ready.\033[0m")
+
             first_episode = True
             episode_prepared = False
             if bootstrap:
@@ -981,7 +986,9 @@ def run(args, hardware_cls) -> None:
                 warmup_episode = 0
                 while len(warmup_replay) < warmup_transitions:
                     warmup_episode += 1
-                    _prepare_episode(hardware, "warmup", warmup_episode, first_episode)
+                    _prepare_episode(
+                        hardware, "warmup", warmup_episode, first_episode, load_model
+                    )
                     first_episode = False
                     ticks, success, elapsed, aborted = run_episode(
                         args, "warmup", hardware, feature, learner, lock, q01, q99,
@@ -1020,7 +1027,7 @@ def run(args, hardware_cls) -> None:
                         f"Warmup transitions: {len(warmup_replay)}/{warmup_transitions}"
                     )
 
-                _prepare_episode(hardware, args.phase, 1, first_episode)
+                _prepare_episode(hardware, args.phase, 1, first_episode, load_model)
                 episode_prepared = True
                 if not _confirm_offline_warmup():
                     return
@@ -1067,7 +1074,9 @@ def run(args, hardware_cls) -> None:
                     if episode_prepared:
                         episode_prepared = False
                     else:
-                        _prepare_episode(hardware, args.phase, episode, first_episode)
+                        _prepare_episode(
+                            hardware, args.phase, episode, first_episode, load_model
+                        )
                     first_episode = False
                     ticks, success, elapsed, aborted = run_episode(
                         args, args.phase, hardware, feature, learner, lock, q01, q99,
