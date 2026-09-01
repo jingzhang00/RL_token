@@ -65,7 +65,7 @@ online_rl:
   # Optional learner checkpoint; CLI --resume takes precedence.
   resume: null
   # resume: checkpoints/online/rollout/learner_latest.pt
-  checkpoint_interval: 10000
+  checkpoint_interval: 5000
   evaluation_episodes: 50
 
 tasks:

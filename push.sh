@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-commit_message="${*:-ver2: update}"
+commit_message="${*:-ver3: fix online rollout reply buffer}"
 
 git rev-parse --is-inside-work-tree >/dev/null
 git add -A

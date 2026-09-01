@@ -13,6 +13,7 @@ import termios
 import threading
 import time
 import tty
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -273,7 +274,86 @@ def _offline_warmup(
             wandb_run.log(payload)
 
 
-def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
+SOURCE_IDS = {"vla": 0, "actor": 1, "human": 2}
+
+
+def _create_episode_dataset(args, settings, hardware_cls, action_dim, proprio_dim):
+    from robots.collect_lerobot import (
+        DEFAULT_VIDEO_CODEC,
+        DEFAULT_VIDEO_CRF,
+        DEFAULT_VIDEO_GOP,
+        DEFAULT_VIDEO_PIX_FMT,
+        LocalLeRobotV21Dataset,
+    )
+
+    fps = int(args.control_hz)
+    if fps != args.control_hz:
+        raise ValueError("LeRobot v2.1 episode recording requires an integer control_hz")
+    features = {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": (hardware_cls.state_dim,),
+            "names": None,
+        },
+        "observation.proprio": {
+            "dtype": "float32",
+            "shape": (proprio_dim,),
+            "names": None,
+        },
+        "action": {"dtype": "float32", "shape": (action_dim,), "names": None},
+        "action.base_vla_reference": {
+            "dtype": "float32",
+            "shape": (args.vla_horizon, action_dim),
+            "names": None,
+        },
+        "control.source": {
+            "dtype": "int64",
+            "shape": (1,),
+            "names": list(SOURCE_IDS),
+        },
+        "control.critical": {"dtype": "int64", "shape": (1,), "names": None},
+        hardware_cls.camera_key: {
+            "dtype": "video",
+            "shape": hardware_cls.image_shape,
+            "names": ["height", "width", "channels"],
+        },
+    }
+    writer_args = SimpleNamespace(
+        output_root=args.output / "episodes_lerobot",
+        repo_id=f"local/{settings.task}_online",
+        robot_type=hardware_cls.robot_type,
+        fps=fps,
+        use_videos=True,
+        append=True,
+        image_writer_threads=0,
+        video_codec=DEFAULT_VIDEO_CODEC,
+        video_pix_fmt=DEFAULT_VIDEO_PIX_FMT,
+        video_crf=DEFAULT_VIDEO_CRF,
+        video_gop=DEFAULT_VIDEO_GOP,
+        video_fast_decode=0,
+        encoder_queue_maxsize=30,
+        encoder_threads=None,
+    )
+    return LocalLeRobotV21Dataset(args=writer_args, features=features)
+
+
+def _finish_episode_dataset(dataset, *, aborted, phase, success, seconds):
+    if dataset is None:
+        return None
+    if aborted or not dataset.has_pending_frames():
+        dataset.clear_episode_buffer()
+        return None
+    episode_index = int(dataset.info["total_episodes"])
+    dataset.save_episode(
+        {"phase": phase, "success": bool(success), "seconds": float(seconds)}
+    )
+    return episode_index
+
+
+def run_episode(
+    args, phase, hardware, feature, learner, model_lock, q01, q99,
+    episode_dataset=None,
+):
     """Collect one episode through the robot adapter's small hardware protocol."""
     warmup = phase == "warmup"
     actor_phase = phase in {"critical-only", "full-task", "eval-rlt"}
@@ -330,6 +410,17 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
             stop()
 
     hardware.start_human_episode(hardware.read()[1])
+    if phase == "critical-only":
+        print("\033[1;33m  Loading model...\033[0m")
+        image, state = hardware.read()
+        feature.infer(
+            {
+                "observation/image": image,
+                "observation/state": state,
+                "prompt": args.prompt,
+            }
+        )
+        print("\033[1;32m  ✓ Model ready.\033[0m")
     mode = "WARMUP" if warmup else "HUMAN TELEOP" if phase == "critical-only" else "BASE VLA"
     limit = f"LIMIT {timeout:g}s" if warmup else f"CRITICAL LIMIT {timeout:g}s"
     yellow, red, green, magenta = "\033[1;33m", "\033[1;31m", "\033[1;32m", "\033[1;35m"
@@ -371,34 +462,37 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     break
                 continue
 
+            if phase == "critical-only" and critical and key == "h":
+                key = "c"
             if key == "c" and not warmup:
-                if not (phase == "critical-only" and critical):
-                    critical = not critical
-                    human = False
-                    human_syncing = False
-                    human_hold_state = None
-                    human_sync_stable_frames = 0
-                    stop_human_sync_view()
-                    human_timeout_remaining = None
-                    deadline = time.monotonic() + timeout if critical else None
-                    actor_chunk = None
-                    actor_absolute_chunk = None
-                    actor_offset = args.chunk_len
-                    vla_chunk = None
-                    vla_absolute_chunk = None
-                    vla_offset = args.chunk_len
+                critical = not critical
+                human = False
+                human_syncing = False
+                human_hold_state = None
+                human_sync_stable_frames = 0
+                stop_human_sync_view()
+                human_timeout_remaining = None
+                deadline = time.monotonic() + timeout if critical else None
+                actor_chunk = None
+                actor_absolute_chunk = None
+                actor_offset = args.chunk_len
+                vla_chunk = None
+                vla_absolute_chunk = None
+                vla_offset = args.chunk_len
+                print(
+                    "\033[1;32m✅✅✅  RL control activated  ✅✅✅\033[0m\n"
+                    if critical
+                    else "\033[1;36m  Base VLA control activated.\033[0m\n"
+                )
 
             if key == "h" and not warmup:
                 if human:
-                    if phase == "critical-only" and critical:
-                        human = False
-                        human_syncing = False
-                        human_hold_state = None
-                        human_sync_stable_frames = 0
-                        stop_human_sync_view()
-                    elif phase == "critical-only":
+                    if phase == "critical-only":
                         critical = True
                         deadline = time.monotonic() + timeout
+                        print(
+                            "\033[1;35m✅✅✅  Human control activated  ✅✅✅\033[0m\n"
+                        )
                     elif phase != "critical-only":
                         human = False
                         human_syncing = False
@@ -423,7 +517,10 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                     human_sync_stable_frames = 0
                     hardware.begin_human_sync()
                     start_human_sync_view()
-                    print("\033[1;32m⏳⏳⏳  Human syncing  ⏳⏳⏳\033[0m\n")
+                    print(
+                        "\033[1;35m⏳⏳⏳  Human takeover selected; syncing  "
+                        "⏳⏳⏳\033[0m\n"
+                    )
                 actor_chunk = None
                 actor_absolute_chunk = None
                 actor_offset = args.chunk_len
@@ -488,23 +585,6 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
                             logging.exception("human hold command failed")
                     time.sleep(max(0, period - (time.monotonic() - tick_start)))
                     continue
-
-            if phase == "critical-only" and not critical:
-                image, state = hardware.read()
-                previous = state.copy()
-                try:
-                    command = safe_command(
-                        hardware.human_target(),
-                        state,
-                        args.max_arm_delta_deg,
-                        args.arm_low,
-                        args.arm_high,
-                    )
-                    hardware.send(command)
-                except Exception:
-                    logging.exception("human command failed; command paused")
-                time.sleep(max(0, period - (time.monotonic() - tick_start)))
-                continue
 
             image, state = hardware.read()
             proprio = make_proprio(state, previous, dt=period)
@@ -604,6 +684,19 @@ def run_episode(args, phase, hardware, feature, learner, model_lock, q01, q99):
             executed_normalized = absolute_to_normalized(
                 command[None], state, q01, q99
             )[0]
+            if episode_dataset is not None:
+                episode_dataset.add_frame(
+                    {
+                        "task": args.prompt,
+                        "observation.state": state,
+                        "observation.proprio": proprio,
+                        "action": command,
+                        "action.base_vla_reference": reference_chunk,
+                        "control.source": np.asarray([SOURCE_IDS[source]], np.int64),
+                        "control.critical": np.asarray([critical], np.int64),
+                        episode_dataset.camera_keys[0]: image,
+                    }
+                )
             ticks.append(
                 {
                     "z": z,
@@ -841,6 +934,7 @@ def run(args, hardware_cls) -> None:
     wandb_run = None
     replay = None
     warmup_replay = None
+    episode_dataset = None
     bootstrap = args.phase in train_phases and resume_checkpoint is None
     replay_metadata = {
         "H": args.vla_horizon,
@@ -852,6 +946,10 @@ def run(args, hardware_cls) -> None:
     warmup_metadata = {key: value for key, value in replay_metadata.items() if key != "bootstrap_complete"}
     warmup_metadata["kind"] = "warmup"
     try:
+        if args.phase in train_phases:
+            episode_dataset = _create_episode_dataset(
+                args, settings, hardware_cls, action_dim, proprio_dim
+            )
         if args.phase in train_phases and settings.wandb_enabled:
             wandb_run = _init_wandb(settings, args, learner, warmup_transitions)
         with (
@@ -886,7 +984,15 @@ def run(args, hardware_cls) -> None:
                     _prepare_episode(hardware, "warmup", warmup_episode, first_episode)
                     first_episode = False
                     ticks, success, elapsed, aborted = run_episode(
-                        args, "warmup", hardware, feature, learner, lock, q01, q99
+                        args, "warmup", hardware, feature, learner, lock, q01, q99,
+                        episode_dataset,
+                    )
+                    dataset_episode_index = _finish_episode_dataset(
+                        episode_dataset,
+                        aborted=aborted,
+                        phase="warmup",
+                        success=success,
+                        seconds=elapsed,
                     )
                     if aborted:
                         continue
@@ -904,6 +1010,7 @@ def run(args, hardware_cls) -> None:
                         "seconds": elapsed,
                         "transitions": len(rows),
                         "replay_size": len(warmup_replay),
+                        "dataset_episode_index": dataset_episode_index,
                         "robot_hours": (time.monotonic() - wall_start) / 3600,
                     }
                     outcomes.append(record)
@@ -963,7 +1070,15 @@ def run(args, hardware_cls) -> None:
                         _prepare_episode(hardware, args.phase, episode, first_episode)
                     first_episode = False
                     ticks, success, elapsed, aborted = run_episode(
-                        args, args.phase, hardware, feature, learner, lock, q01, q99
+                        args, args.phase, hardware, feature, learner, lock, q01, q99,
+                        episode_dataset,
+                    )
+                    dataset_episode_index = _finish_episode_dataset(
+                        episode_dataset,
+                        aborted=aborted,
+                        phase=args.phase,
+                        success=success,
+                        seconds=elapsed,
                     )
                     if aborted:
                         continue
@@ -986,6 +1101,7 @@ def run(args, hardware_cls) -> None:
                         "seconds": elapsed,
                         "transitions": len(rows),
                         "replay_size": len(replay) if replay is not None else 0,
+                        "dataset_episode_index": dataset_episode_index,
                         "robot_hours": (time.monotonic() - wall_start) / 3600,
                     }
                     outcomes.append(record)
@@ -1009,6 +1125,10 @@ def run(args, hardware_cls) -> None:
             replay.close()
         if warmup_replay is not None:
             warmup_replay.close()
+        if episode_dataset is not None:
+            if episode_dataset.has_pending_frames():
+                episode_dataset.clear_episode_buffer()
+            episode_dataset.finalize()
     successes = sum(item["success"] for item in outcomes)
     minutes = sum(item["seconds"] for item in outcomes) / 60
     print(

@@ -51,7 +51,11 @@ def _load_initial_state(path: Path) -> np.ndarray:
 class D1Hardware:
     """Adapter implementing the hardware protocol expected by ``rlt.online_rl``."""
 
+    robot_type = "d1_edu"
+    state_dim = 12
     proprio_dim = 24
+    camera_key = "observation.images.d1_rgb"
+    image_shape = (480, 640, 3)
 
     def __init__(self, args):
         self.args, self.robot = args, None
