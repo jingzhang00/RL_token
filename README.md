@@ -85,3 +85,9 @@ Each policy runs for 50 episodes by default. Results are appended to `checkpoint
 ```
 
 The paper's RL token uses the base camera and two wrist cameras. The current D1 dataset and hardware provide only the base camera, which is explicitly configured as `[base_0_rgb]`.
+
+
+## Tools
+```bash
+.venv/bin/python scripts/plot_reward.py checkpoints/online/replay.sqlite --output checkpoints/online/critical_reward.png
+```

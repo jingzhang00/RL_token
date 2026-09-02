@@ -524,7 +524,7 @@ def run_episode(
                 print(
                     "\033[1;32m✅✅✅  RL control activated  ✅✅✅\033[0m\n"
                     if critical
-                    else "\033[1;36m  Base VLA control activated.\033[0m\n"
+                    else "\033[1;36m🤖🤖🤖  Base VLA control activated  🤖🤖🤖\033[0m\n"
                 )
 
             if key == "h" and not warmup:
