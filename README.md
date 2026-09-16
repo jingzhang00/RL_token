@@ -61,8 +61,6 @@ python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1
 python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1 --execute
 # 4. Test human takeover (press h to enter/exit)
 python -m robots.d1.online_rl_d1 --phase eval-rlt --episodes 1 --execute --human
-# 5. Full online run; the first run performs bootstrap automatically
-bash scripts/online.sh --phase critical-only --execute --human
 ```
 
 - The control frequency is fixed at 10 Hz. VLA proposes `H=20` actions, while the VLA and RL policies execute `C=10` actions at each control boundary. After the initial pose is reached, a separate camera thread opens the `D1 Online RL` window and shows live frames. During an episode, press Enter to end it; the robot stays at its last commanded pose and the camera/data thread pauses. Then press `s` or `f` to label success/failure. In `critical-only`, teleoperate to the critical phase, press `c` to start the RL policy, or press `h` to start critical-phase human intervention; the second `c` or `h` prompts for the critical-phase result before returning to base VLA. In `full-task`, `c` toggles between base VLA and RL during the critical phase; `h` enters critical-phase human intervention and the next `h` prompts for the critical-phase result before returning to base VLA. Press the critical-result `s`, `f`, or `q` key directly without Enter. This critical result is the replay terminal reward and is separate from the final episode result. The timeout starts when critical control begins; human takeover synchronization does not consume it. During synchronization the robot holds its pre-takeover pose, and small human-sensor changes inside the configured deadband are ignored. `q` or Ctrl+C abandons the current episode without adding it to replay. Mark success only after the doll is supported by the plate, the hand has released it, and the scene has been stable for 1 second.
@@ -90,4 +88,10 @@ The paper's RL token uses the base camera and two wrist cameras. The current D1 
 ## Tools
 ```bash
 .venv/bin/python scripts/plot_reward.py checkpoints/online/replay.sqlite --output checkpoints/online/critical_reward.png
+```
+
+
+## Port
+```bash
+ls -l /dev/serial/by-id/ 2>/dev/null
 ```

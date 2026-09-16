@@ -362,7 +362,8 @@ def run_episode(
     warmup = phase == "warmup"
     actor_phase = phase in {"critical-only", "full-task", "eval-rlt"}
     critical = False
-    human = phase == "critical-only"
+    human_available = getattr(hardware, "human_available", True)
+    human = phase == "critical-only" and human_available
     human_syncing = False
     human_hold_state = None
     human_sync_stable_frames = 0
@@ -444,7 +445,13 @@ def run_episode(
         return result
 
     hardware.start_human_episode(hardware.read()[1])
-    mode = "WARMUP" if warmup else "HUMAN TELEOP" if phase == "critical-only" else "BASE VLA"
+    mode = (
+        "WARMUP"
+        if warmup
+        else "HUMAN TELEOP"
+        if phase == "critical-only" and human_available
+        else "BASE VLA"
+    )
     limit = f"LIMIT {timeout:g}s" if warmup else f"CRITICAL LIMIT {timeout:g}s"
     yellow, red, green, magenta = "\033[1;33m", "\033[1;31m", "\033[1;32m", "\033[1;35m"
     def key(label, color):
@@ -528,6 +535,9 @@ def run_episode(
                 )
 
             if key == "h" and not warmup:
+                if not human_available:
+                    logging.warning("Human takeover unavailable; continuing without it")
+                    continue
                 if human:
                     if phase == "critical-only":
                         critical = True

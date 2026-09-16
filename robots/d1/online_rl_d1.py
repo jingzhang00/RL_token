@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 from pathlib import Path
 import threading
 
@@ -74,6 +75,7 @@ class D1Hardware:
         self.urdf_path = None
         self.initial_state = _load_initial_state(args.initial_state_file)
         self.exo = self.glove = None
+        self.human_available = bool(args.human)
         self.exo_zero = self.takeover_arm = self.glove_zero = self.takeover_hand = None
         self.human_origin_exo = self.human_origin_glove = self.human_origin_robot = None
         self._human_sync_count = 0
@@ -100,19 +102,54 @@ class D1Hardware:
             from beingbeyond_d1_edu_sdk.exo import ExoDriver, ExoDriverCfg
             from beingbeyond_d1_edu_sdk.glove_driver import GloveConfig, GloveReader
 
-            self.exo = ExoDriver(
-                ExoDriverCfg(port=self.args.exo_port, read_hz=self.args.control_hz)
-            )
-            self.exo.open()
-            self.exo.release_torque()
-            self.glove = GloveReader(
-                GloveConfig(
-                    port=self.args.glove_port,
-                    timeout=0.01,
-                    use_auto_calib=True,
-                    offset_deg=[60, -70, 120, 120, 120, 120],
+            ports = {
+                "exo": self.args.exo_port,
+                "glove": self.args.glove_port,
+            }
+            missing = [
+                f"{name}={port}"
+                for name, port in ports.items()
+                if not port or not Path(port).exists()
+            ]
+            if missing:
+                logging.warning(
+                    "Human takeover disabled; missing device port(s): %s",
+                    ", ".join(missing),
                 )
-            )
+                self.human_available = False
+            else:
+                try:
+                    self.exo = ExoDriver(
+                        ExoDriverCfg(
+                            port=self.args.exo_port, read_hz=self.args.control_hz
+                        )
+                    )
+                    self.exo.open()
+                    self.exo.release_torque()
+                    self.glove = GloveReader(
+                        GloveConfig(
+                            port=self.args.glove_port,
+                            timeout=0.01,
+                            use_auto_calib=True,
+                            offset_deg=[60, -70, 120, 120, 120, 120],
+                        )
+                    )
+                except Exception as exc:
+                    if any(
+                        not port or not Path(port).exists() for port in ports.values()
+                    ):
+                        logging.warning(
+                            "Human takeover disabled; exo/glove disappeared during initialization: %s",
+                            exc,
+                        )
+                        for obj in (self.glove, self.exo):
+                            with contextlib.suppress(Exception):
+                                if obj is not None:
+                                    obj.close()
+                        self.exo = self.glove = None
+                        self.human_available = False
+                    else:
+                        raise
         return self
 
     def start_camera_thread(self):
