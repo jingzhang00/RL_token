@@ -1,7 +1,7 @@
 """Small URDF/FK dashboard for human takeover synchronization.
 
-It uses Pinocchio for URDF/FK and renders compact arm/hand skeleton views; it
-does not run physics or IK.
+Real D1 mesh views with orthographic cameras and a fixed dorsal hand view.
+Forward kinematics only: no physics steps or robot commands.
 """
 
 from __future__ import annotations
@@ -13,6 +13,9 @@ import os
 from pathlib import Path
 from xml.etree import ElementTree
 
+os.environ.setdefault("MUJOCO_GL", "egl")
+
+import mujoco
 import numpy as np
 
 
@@ -267,9 +270,7 @@ class UrdfKinematics:
 class SyncDashboard:
     """Pygame HUD for the human-sync pose alignment step.
 
-    The renderer intentionally stays schematic: URDF links provide the arm
-    geometry, while the hand remains a stable dorsal/oblique skeleton that is
-    easier to annotate than a perspective model.
+    Uses the same mesh views and corrective rotation arrows as BeingFlow.
     """
 
     BG = (8, 14, 18)
@@ -296,6 +297,27 @@ class SyncDashboard:
         self._fonts: dict[tuple[int, bool], object] = {}
         self._closed = False
         self._previous_focus = None
+        self.model = mujoco.MjModel.from_xml_path(str(Path(__file__).with_name("assets") / "d1" / "mjcf" / "d1.xml"))
+        self.current = mujoco.MjData(self.model)
+        self.target = mujoco.MjData(self.model)
+        self.hand_current = mujoco.MjData(self.model)
+        self.hand_target = mujoco.MjData(self.model)
+        self._renderers = {}
+        self._hide_labels = False
+        self._joint_ids_mesh = {name: self.model.joint(name).id for name in ARM_JOINTS + HAND_JOINTS}
+        hand_root = self.model.body("flange").id
+        for i in range(self.model.ngeom):
+            body = int(self.model.geom_bodyid[i])
+            while body and body != hand_root:
+                body = int(self.model.body_parentid[body])
+            self.model.geom_group[i] = 1 if body == hand_root else 0
+            mesh = int(self.model.geom_dataid[i])
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_MESH, mesh) if mesh >= 0 else ''
+            if name and (name.startswith('neck') or name == 'camera'):
+                self.model.geom_group[i] = 2  # Head state is not supplied by this HUD.
+            self.model.geom_rgba[i] = (.72, .76, .79, 1)
+        self.model.vis.headlight.ambient[:] = (.4, .4, .4)
+        self.model.vis.headlight.diffuse[:] = (.75, .75, .75)
 
     def _pg(self):
         if self._pygame is None:
@@ -319,6 +341,9 @@ class SyncDashboard:
 
     def start(self) -> None:
         """Open the Pygame window; called lazily when human sync starts."""
+        # SDL surface acceleration can bind a GLX context that conflicts with EGL.
+        # Only the window blit is software; MuJoCo still renders meshes on the GPU.
+        os.environ.setdefault("SDL_FRAMEBUFFER_ACCELERATION", "0")
         pygame = self._pg()
         self._previous_focus = _x11_focus_window()
         self._window = pygame.Window(
@@ -335,6 +360,10 @@ class SyncDashboard:
         self.present()
 
     def stop(self) -> None:
+        for renderer in getattr(self, "_renderers", {}).values():
+            renderer.close()
+        if hasattr(self, "_renderers"):
+            self._renderers.clear()
         window = getattr(self, "_window", None)
         if window is not None:
             window.destroy()
@@ -593,72 +622,15 @@ class SyncDashboard:
         self._text(surface, horizontal, (x + width - 8, y + height - 19), self.MUTED, 11, align="right")
         self._text(surface, vertical, (x + 8, y + 7), self.MUTED, 11)
 
-    def _arm_view(
-        self,
-        surface,
-        current,
-        target,
-        arm_error,
-        threshold,
-        view: str,
-        rect: tuple[int, int, int, int],
-        title_size: int,
-    ) -> None:
-        pygame = self._pg()
-        x, y, width, height = rect
-        self._panel(surface, rect, self.PANEL_ALT, 230, 10, self.BORDER)
-        self._text(surface, view.upper(), (x + 16, y + 13), self.CYAN, title_size, True)
-        plot = (x + 17, y + 45, max(width - 34, 1), max(height - 59, 1))
-        self._grid(
-            surface,
-            plot,
-            "X" if view != "Side" else "Y",
-            "Z" if view != "Top" else "Y",
-        )
-        current_points = self._arm_xy(self._arm_points(current), view)
-        target_points = self._arm_xy(self._arm_points(target), view)
-        all_points = np.vstack((current_points, target_points))
-        screen_points = self._project_points(
-            all_points,
-            plot[0],
-            plot[1],
-            plot[2],
-            plot[3],
-            f"arm-{view}",
-        )
-        current_xy = screen_points[: len(current_points)]
-        target_xy = screen_points[len(current_points) :]
-        self._dashed(surface, target_xy, self.GLOVE, 1, 6)
-        self._line(surface, current_xy, self.WHITE, 3)
-        for point in target_xy:
-            pygame.draw.circle(surface, self.GLOVE, tuple(np.round(point).astype(int)), 3, 1)
-        for joint_index, error in enumerate(arm_error):
-            center = tuple(np.round(current_xy[joint_index + 1]).astype(int))
-            target_center = tuple(np.round(target_xy[joint_index + 1]).astype(int))
-            pygame.draw.line(surface, self.RED, center, target_center, 1)
-            error_value = float(error)
-            good = abs(error_value) <= float(threshold)
-            if good:
-                pygame.draw.circle(surface, self.GREEN, center, 6)
-                pygame.draw.circle(surface, self.BG, center, 2)
-            else:
-                color = self._color(error_value, threshold)
-                pygame.draw.circle(surface, color, center, 8, 2)
-                radius = max(16, min(25, int(min(width, height) * 0.055)))
-                positive = error_value >= 0
-                kind = ARM_DIRECTION_KINDS[joint_index]
-                self._joint_direction_marker(
-                    surface, center, positive, kind, color, radius
-                )
-                if view == "Front":
-                    direction = ARM_DIRECTION_NAMES[joint_index][int(positive)]
-                    self._direction_label(
-                        surface,
-                        center,
-                        f"{direction}  {abs(error_value):.1f}°",
-                        color,
-                        plot,
-                    )
+    def _arm_view(self, surface, current, target, arm_error, threshold, view, rect, title_size):
+        azimuth, elevation, axes = {
+            'Front': (90, 0, 'X / Z'),
+            'Side': (0, 0, 'Y / Z'),
+            'Top': (0, -90, 'X / Y'),
+        }[view]
+        label = {'Front': 'SIDE', 'Side': 'BACK', 'Top': 'TOP'}[view]
+        current_xy, target_xy, basis = self._mesh_view(surface, rect, f'{label}   {axes}' if view == 'Front' else '', azimuth, elevation, mirror=view == 'Front')
+        self._joint_status(surface, rect, current_xy, target_xy, basis, arm_error, threshold, show_labels=view == "Front")
 
     @staticmethod
     def _finger_points(base: np.ndarray, length: float, splay: float, flex: float) -> np.ndarray:
@@ -751,83 +723,12 @@ class SyncDashboard:
         else:
             self._line(surface, skeleton["Wrist"], color, 3)
 
-    def _hand_view(
-        self,
-        surface,
-        current_state,
-        target_state,
-        hand_error,
-        threshold,
-        rect: tuple[int, int, int, int],
-    ) -> None:
-        pygame = self._pg()
-        x, y, width, height = rect
-        self._panel(surface, rect, self.PANEL_ALT, 230, 10, self.BORDER)
-        self._text(surface, "", (x + 18, y + 15), self.CYAN, 18, True)
-        self._text(surface, "GLOVE", (x + width - 122, y + 18), self.GLOVE, 11, True)
-        self._text(surface, "ROBOT", (x + width - 18, y + 18), self.WHITE, 11, True, "right")
-        plot = (x + 14, y + 45, width - 28, height - 57)
-        current = self._hand_skeleton(np.asarray(current_state)[6:], *plot)
-        target = self._hand_skeleton(np.asarray(target_state)[6:], *plot)
-        self._hand_skeleton_draw(surface, target, self.GLOVE, True)
-        self._hand_skeleton_draw(surface, current, self.WHITE, False)
-        for label in ("Index", "Middle", "Ring", "Pinky", "Thumb"):
-            for point in current[label][1:]:
-                pygame.draw.circle(surface, self.WHITE, tuple(np.round(point).astype(int)), 4)
-        finger_channels = (("Index", 2), ("Middle", 3), ("Ring", 4), ("Pinky", 5))
-        for label, channel in finger_channels:
-            anchor = tuple(np.round(current[label][0]).astype(int))
-            error = float(hand_error[channel])
-            good = abs(error) <= float(threshold)
-            color = self.GREEN if good else self._color(error, threshold)
-            if good:
-                pygame.draw.circle(surface, self.GREEN, anchor, 6)
-                pygame.draw.circle(surface, self.BG, anchor, 2)
-            else:
-                self._joint_direction_marker(
-                    surface,
-                    anchor,
-                    error >= 0,
-                    HAND_DIRECTION_KINDS[channel],
-                    color,
-                    20,
-                )
-                direction = HAND_DIRECTION_NAMES[channel][int(error >= 0)]
-                self._direction_label(
-                    surface,
-                    anchor,
-                    direction,
-                    color,
-                    plot,
-                )
-                pygame.draw.circle(surface, color, anchor, 8, 2)
-        thumb_anchor = tuple(np.round(current["Thumb"][1]).astype(int))
-        for channel in (0, 1):
-            error = float(hand_error[channel])
-            good = abs(error) <= float(threshold)
-            color = self.GREEN if good else self._color(error, threshold)
-            anchor = (thumb_anchor[0] - channel * 2, thumb_anchor[1] + channel * 8)
-            if good:
-                pygame.draw.circle(surface, self.GREEN, anchor, 6)
-                pygame.draw.circle(surface, self.BG, anchor, 2)
-            else:
-                self._joint_direction_marker(
-                    surface,
-                    anchor,
-                    error >= 0,
-                    HAND_DIRECTION_KINDS[channel],
-                    color,
-                    20,
-                )
-                direction = HAND_DIRECTION_NAMES[channel][int(error >= 0)]
-                self._direction_label(
-                    surface,
-                    anchor,
-                    direction,
-                    color,
-                    plot,
-                )
-                pygame.draw.circle(surface, color, anchor, 8, 2)
+    def _hand_view(self, surface, current_state, target_state, hand_error, threshold, rect):
+        # Isolate finger articulation from arm/wrist motion, like the legacy hand view.
+        for data, state in ((self.hand_current, current_state), (self.hand_target, target_state)):
+            self._pose(data, np.concatenate((np.zeros(6), np.asarray(state)[6:])))
+        # Zero-pose dorsal normal is (-X + Z); fingers point up, thumb to the left.
+        self._mesh_view(surface, rect, 'HAND   WHITE:ROBOT  CYAN:TARGET', 0, -45, hand=True)
 
     def _footer(
         self,
@@ -877,6 +778,11 @@ class SyncDashboard:
         stable_frames: int = 0,
         required_frames: int = 3,
     ) -> np.ndarray:
+        self._pose(self.current, current_state)
+        self._pose(self.target, target_state)
+        self._hide_labels = (stable_frames >= required_frames
+                             and np.all(np.abs(arm_error_deg) <= arm_threshold_deg)
+                             and np.all(np.abs(hand_error) <= hand_threshold))
         pygame = self._pg()
         surface = self._ensure_surface()
         current = self.kinematics.pose(current_state)
@@ -956,6 +862,142 @@ class SyncDashboard:
             self.present()
         pixels = pygame.surfarray.array3d(surface)
         return np.ascontiguousarray(np.transpose(pixels, (1, 0, 2))[:, :, ::-1])
+
+    def _pose(self, data, state):
+        state = np.asarray(state, dtype=float)
+        if state.shape != (12,) or not np.isfinite(state).all():
+            raise ValueError("dashboard requires twelve finite joint values")
+        data.qpos[:] = self.model.qpos0
+        for name, value in zip(ARM_JOINTS, state[:6]):
+            data.qpos[self.model.jnt_qposadr[self._joint_ids_mesh[name]]] = value
+        for name, channel in zip(HAND_JOINTS, HAND_CHANNELS):
+            joint = self._joint_ids_mesh[name]
+            low, high = self.model.jnt_range[joint]
+            data.qpos[self.model.jnt_qposadr[joint]] = low + np.clip(state[6 + channel], 0, 1) * (high - low)
+        mujoco.mj_forward(self.model, data)
+
+    def _mesh_view(self, surface, rect, title, azimuth, elevation, hand=False, mirror=False):
+        x, y, width, height = rect
+        self._panel(surface, rect, self.PANEL_ALT, 230, 10, self.BORDER)
+        if title:
+            self._text(surface, title, (x + 16, y + 13), self.CYAN, 13, True)
+        w, h = width - 24, height - 48
+        key = (w, h)
+        if key not in self._renderers:
+            self._renderers[key] = mujoco.Renderer(self.model, width=w, height=h)
+        renderer = self._renderers[key]
+        option = mujoco.MjvOption()
+        option.geomgroup[:] = 0
+        option.geomgroup[1] = 1
+        option.geomgroup[0] = not hand
+        visible = self.model.geom_group == 1 if hand else self.model.geom_group < 2
+        current, target = (self.hand_current, self.hand_target) if hand else (self.current, self.target)
+        positions = np.vstack((current.geom_xpos[visible], target.geom_xpos[visible]))
+        radii = np.tile(self.model.geom_rbound[visible], 2)[:, None]
+        low, high = (positions - radii).min(axis=0), (positions + radii).max(axis=0)
+        camera = mujoco.MjvCamera()
+        self.model.vis.global_.orthographic = 1
+        self.model.vis.global_.ipd = 0
+        camera.lookat[:] = (low + high) / 2
+        camera.azimuth, camera.elevation = azimuth, elevation
+        az, el = np.deg2rad([azimuth, elevation])
+        right = np.array([np.sin(az), -np.cos(az), 0])
+        up = np.array([-np.cos(az) * np.sin(el), -np.sin(az) * np.sin(el), np.cos(el)])
+        projected = positions @ np.stack((right, up), axis=1)
+        extent = (projected + radii).max(axis=0) - (projected - radii).min(axis=0)
+        self.model.vis.global_.fovy = max(extent[1], extent[0] * h / w, .1) * 1.12
+        camera.distance = max(float(np.linalg.norm(high - low)) * 2, 1)
+        renderer.update_scene(current, camera=camera, scene_option=option)
+        scene = renderer.scene
+        first = scene.ngeom
+        mujoco.mjv_addGeoms(self.model, target, option, mujoco.MjvPerturb(),
+                          mujoco.mjtCatBit.mjCAT_DYNAMIC, scene)
+        for index in range(first, scene.ngeom):
+            scene.geoms[index].rgba[:] = (.1, .85, .9, .28)
+        scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
+        pixels = renderer.render()
+        if mirror:
+            pixels = pixels[:, ::-1].copy()
+            right = -right
+        pixels[np.all(pixels == 0, axis=2)] = self.BG
+        pygame = self._pg()
+        image = pygame.surfarray.make_surface(np.transpose(pixels, (1, 0, 2)))
+        surface.blit(image, (x + 12, y + 36))
+        points = np.vstack([
+            data.xanchor[[self._joint_ids_mesh[name] for name in ARM_JOINTS]]
+            for data in (self.current, self.target)
+        ])
+        offset = (points - camera.lookat) @ np.stack((right, up), axis=1)
+        offset *= h / self.model.vis.global_.fovy
+        screen = np.column_stack((x + 12 + w / 2 + offset[:, 0],
+                                  y + 36 + h / 2 - offset[:, 1]))
+        basis = np.stack((right, -up), axis=1) * h / self.model.vis.global_.fovy
+        return screen[:6], screen[6:], basis
+
+    def _joint_status(self, surface, rect, current_xy, target_xy, basis, errors, threshold, show_labels=True):
+        pygame = self._pg()
+        x, y, width, height = rect
+        bounds = pygame.Rect(x + 14, y + 40, width - 28, height - 74)
+        occupied = []
+        labels = []
+        for index, error in enumerate(errors):
+            center = tuple(np.round(current_xy[index]).astype(int))
+            target = tuple(np.round(target_xy[index]).astype(int))
+            color = self.GREEN if abs(error) <= threshold else self.RED
+            if abs(error) > threshold:
+                self._joint_rotation_arrow(surface, center, index, -float(error), basis, color)
+            pygame.draw.circle(surface, color, center, 6, 2)
+        if self._hide_labels or not show_labels:
+            return
+        for index in np.argsort(current_xy[:, 1]):
+            center = tuple(np.round(current_xy[index]).astype(int))
+            target = tuple(np.round(target_xy[index]).astype(int))
+            error = float(errors[index])
+            good = abs(error) <= threshold
+            color = self.GREEN if good else self.RED
+            text = 'OK' if good else f'{abs(error):.1f}°'
+            label_width = self._font(12, True).size(text)[0] + 10
+            # Try nearby positions before moving a label, keeping overlapping joints legible.
+            label = None
+            for dy in (0, -22, 22, -44, 44, -66, 66, -88, 88):
+                for left in (center[0] + 10, center[0] - label_width - 10):
+                    candidate = pygame.Rect(left, center[1] - 10 + dy, label_width, 20).clamp(bounds)
+                    if not any(candidate.inflate(4, 4).colliderect(other) for other in occupied):
+                        label = candidate
+                        break
+                if label is not None:
+                    break
+            if label is None:
+                label = candidate
+            occupied.append(label)
+            end = (label.left if label.centerx > center[0] else label.right, label.centery)
+            pygame.draw.line(surface, color, center, end, 1)
+            labels.append((label, text, color))
+        # Paint tags last so another joint's marker or leader cannot obscure text.
+        for label, text, color in labels:
+            self._panel(surface, tuple(label), self.PANEL, 255, 4, color)
+            self._text(surface, text, (label.x + 5, label.y + 2), color, 12, True)
+
+    def _joint_rotation_arrow(self, surface, center, index, correction, basis, color):
+        # Project a rotation around the real joint axis, not an arbitrary screen circle.
+        axis = self.current.xaxis[self._joint_ids_mesh[ARM_JOINTS[index]]]
+        reference = np.array([1., 0., 0.]) if abs(axis[0]) < .9 else np.array([0., 1., 0.])
+        first = np.cross(axis, reference)
+        first /= np.linalg.norm(first)
+        second = np.cross(axis, first)
+        angles = np.pi / 4 + np.sign(correction) * np.linspace(0, np.pi * 1.25, 40)
+        radius = 19 / np.linalg.norm(basis[:, 0])
+        ring = radius * (np.cos(angles)[:, None] * first + np.sin(angles)[:, None] * second)
+        points = np.asarray(center) + ring @ basis
+        self._line(surface, points, color, 2)
+        tip = points[-1]
+        tangent = tip - points[-3]
+        length = np.linalg.norm(tangent)
+        if length > 1e-6:
+            tangent /= length
+            normal = np.array([-tangent[1], tangent[0]]) * 4
+            back = tip - tangent * 8
+            self._pg().draw.polygon(surface, color, self._points((tip, back + normal, back - normal)))
 
     def present(self) -> None:
         if self._screen is None or self._closed:

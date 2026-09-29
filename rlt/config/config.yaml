@@ -1,5 +1,5 @@
 task: d1
-wandb_enabled: true
+wandb_enabled: false
 project_name: openpi
 log_interval: 10
 

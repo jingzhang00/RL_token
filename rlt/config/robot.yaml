@@ -29,4 +29,4 @@ hardware:
   arm_dev: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B8E115148-if00
   camera_device: /dev/v4l/by-id/usb-SunplusIT_Inc_SPCA2100_PC_Camera-video-index0
   exo_port: /dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0
-  glove_port: /dev/ttyACM1
+  glove_port: /dev/ttyACM2
